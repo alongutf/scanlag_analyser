@@ -11,6 +11,11 @@ def test_scan_name_parsing():
     m = SCAN_NAME.match("vapc_scan_1-1.2_20250807_1511.tif")
     assert m["prefix"] == "vapc_scan" and m["scanner"] == "1-1.2"
     assert SCAN_NAME.match("vapc_scan_1-3_20250806_1726_motions.mat") is None
+    m = SCAN_NAME.match("_1-4.4.1u_20261016_1047.tiff")  # empty prefix
+    assert m["prefix"] == "" and m["scanner"] == "1-4.4.1u" and m["date"] == "20261016"
+    m = SCAN_NAME.match("1-4.1u_20261015_1307.TIF")  # no prefix at all
+    assert m["prefix"] is None and m["scanner"] == "1-4.1u"
+    assert SCAN_NAME.match("run_20261015_1307.log") is None
 
 
 def test_track_flags():
@@ -31,6 +36,37 @@ def test_track_flags():
     flicker = np.zeros(9, bool)
     flicker[6] = True
     assert any(f.startswith("transient merge") for f in track_flags(smooth, flicker))
+    fragment = np.array([0, 0, 29, 133, 144, 157, 170, 180, 190])  # split off a neighbour, merged from then on
+    merged = np.zeros(9, bool)
+    merged[3:] = True
+    assert track_flags(fragment, merged) == ["large at appearance (29 px)"]
+    assert not any(f.startswith("large") for f in track_flags(np.array([0, 20, 30, 40]), np.zeros(4, bool)))
+
+
+def test_track_flags_use_split_areas():
+    from scanlag.pipeline.flags import colony_flags
+
+    a = np.array([15, 30, 60, 20, 25, 30])  # a bad split takes most of the colony in frame 3
+    merged = np.array([False, False, True, True, True, True])
+    assert not any(f.startswith("shrinks") for f in track_flags(a, merged))  # seed tracker: merged frames skipped
+    assert any(f.startswith("shrinks") for f in track_flags(a, merged, merged_area_is_own=True))
+
+    own = np.zeros((2, 20, 20), np.uint16)  # shape flags read the colony's own mask
+    own[:, 2:18, 2:5] = 1
+    labels = np.zeros_like(own)
+    labels[:, 2:18, 2:18] = 1  # the detected blob is a square that the colony shares with a neighbour
+    area = np.full((2, 1), 48)
+    args = np.zeros((2, 1), bool), np.ones((2, 1), int), labels
+    assert "elongated" in colony_flags(area, *args, own)["flags"].iloc[0]
+    assert "elongated" not in colony_flags(area, *args)["flags"].iloc[0]
+
+
+def test_flag_kinds():
+    from scanlag.gui.review import ReviewWindow
+
+    kinds = ReviewWindow.flag_kinds("gap (3 frames); jump x2.1; shrinks to 50%; large at appearance (29 px)")
+    assert kinds == ["gap", "jump", "shrinks", "large at appearance"]
+    assert ReviewWindow.flag_kinds("") == []
 
 
 def test_shape_flags():
@@ -65,3 +101,42 @@ def test_find_scanners_groups_and_names(tmp_path):
     scanners = {s.name: s for s in find_scanners(tmp_path)}
     assert set(scanners) == {"1-3", "1-1.2"}
     assert len(scanners["1-3"].scans) == 2 and scanners["1-3"].times_min == [0.0, 120.0]
+
+
+def test_retrack_plate(tmp_path):
+    import json
+
+    import pandas as pd
+    from scipy import ndimage as ndi
+
+    from scanlag.pipeline.run import load_plate_dirs, retrack_plate
+    from scanlag.store import ResultsStore
+
+    raw = tmp_path / "raw"
+    raw.mkdir()
+    store = ResultsStore(tmp_path / "res", [raw])
+    yy, xx = np.indices((60, 80))
+    labels = store.create_labels((6, 60, 80), "A", "plate_1", "labels.zarr")
+    for k, r in enumerate(range(5, 17, 2)):  # two colonies that merge in the last frames
+        lab, _ = ndi.label(((yy - 30) ** 2 + (xx - 25) ** 2 <= r * r) | ((yy - 30) ** 2 + (xx - 52) ** 2 <= r * r))
+        labels[k] = lab
+    store.write_mask(np.ones((60, 80), bool), "A", "plate_1", "mask.png")
+    store.write_json({"scanner": "A", "plate": 1, "times_min": [0, 30, 60, 90, 120, 150], "min_area": 10},
+                     "A", "plate_1", "plate.json")
+    pd.DataFrame({"colony_id": [1, 2, 3]}).to_parquet(store.path("A", "plate_1", "colonies.parquet"))
+    store.path("A", "plate_1", "review.json").write_text('{"visited": true, "log": []}')
+
+    d = load_plate_dirs(store.root)[0]
+    r = retrack_plate(store, d)
+    assert (r["old_tracker"], r["old_colonies"], r["colonies"]) == ("seed", 3, 2)
+    assert json.loads((d / "plate.json").read_text())["tracker"] == "footprint"
+    assert (d / "colonies.seed.bak.parquet").exists() and (d / "review.seed.bak.json").exists()
+    assert not (d / "review.json").exists() and (d / "colonies.zarr").exists()
+    tracks = pd.read_parquet(d / "tracks.parquet")
+    assert tracks.merged.any() and (tracks.groupby("colony_id").area_px.diff().dropna() > 0).all()
+
+    retrack_plate(store, d, "seed")  # back to MATLAB's tracker: merged colonies report the blob
+    assert not (d / "colonies.zarr").exists()
+    tracks = pd.read_parquet(d / "tracks.parquet")
+    last = tracks[tracks.frame == 5]
+    assert last.merged.all() and last.area_px.nunique() == 1

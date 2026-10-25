@@ -22,9 +22,14 @@ Options:
   --plates         plates per scanner (default 6)
   --mask-fraction  working area radius / plate radius (default 0.8, as MATLAB)
   --threshold      classical threshold TH (default 0.2)
+  --tracker        footprint (default: colonies keep their own area after merging) or seed (MATLAB:
+                   merged colonies all report the merged blob's area)
   --redo           segment again even if results exist
   --review-only    skip segmentation, open the GUI on existing results
   --reflag         recompute the review flags of existing results (keeps review decisions)
+  --retrack        track existing results again with --tracker, from the stored segmentation (no
+                   scans read). Colony numbers change, so the review starts afresh; the old
+                   colonies.parquet and review.json are kept as *.bak files
   --no-review      segment and export without opening the GUI (all colonies as detected)
 """
 
@@ -37,7 +42,7 @@ import sys
 from pathlib import Path
 
 from scanlag.pipeline.export import export
-from scanlag.pipeline.run import RunConfig, load_plate_dirs, process_scanner, refresh_flags
+from scanlag.pipeline.run import RunConfig, load_plate_dirs, process_scanner, refresh_flags, retrack_plate
 from scanlag.pipeline.scans import find_scanners
 from scanlag.cli import split_prompt_args
 from scanlag.store import ResultsStore, default_results_dir
@@ -51,10 +56,12 @@ def main() -> None:
     parser.add_argument("--plates", type=int, default=6)
     parser.add_argument("--mask-fraction", type=float, default=0.8)
     parser.add_argument("--threshold", type=float, default=0.2)
+    parser.add_argument("--tracker", choices=["footprint", "seed"], default="footprint")
     parser.add_argument("--redo", action="store_true")
     parser.add_argument("--review-only", action="store_true")
     parser.add_argument("--no-review", action="store_true")
     parser.add_argument("--reflag", action="store_true")
+    parser.add_argument("--retrack", action="store_true")
     args = parser.parse_args(split_prompt_args(sys.argv[1:]))
 
     raw = args.scans.resolve()
@@ -63,9 +70,9 @@ def main() -> None:
     store = ResultsStore(args.out or default_results_dir(raw), [raw])
     print(f"results: {store.root}")
     cfg = RunConfig(detector=args.detector, n_plates=args.plates, mask_fraction=args.mask_fraction,
-                    threshold=args.threshold)
+                    threshold=args.threshold, tracker=args.tracker)
 
-    if not args.review_only and not args.reflag:
+    if not args.review_only and not args.reflag and not args.retrack:
         scanners = find_scanners(raw)
         print(f"{len(scanners)} scanner(s): " + ", ".join(f"{s.name} ({len(s.scans)} scans)" for s in scanners))
         for s in scanners:
@@ -83,7 +90,12 @@ def main() -> None:
     plate_dirs = load_plate_dirs(store.root)
     if not plate_dirs:
         sys.exit("no processed plates found")
-    if args.reflag:
+    if args.retrack:
+        for d in plate_dirs:
+            r = retrack_plate(store, d, cfg.tracker)
+            print(f"{d.parent.name}/{d.name}: {r['old_tracker']} -> {cfg.tracker} tracker, "
+                  f"{r['old_colonies']} -> {r['colonies']} colonies, {r['flagged']} flagged", flush=True)
+    elif args.reflag:
         for d in plate_dirs:
             print(f"{d.parent.name}/{d.name}: {refresh_flags(d)} flagged colonies")
     if args.no_review:

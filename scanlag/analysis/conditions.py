@@ -15,23 +15,29 @@ Per colony (included colonies only):
 * ``appearance_min`` (and ``_h``): first frame the colony is detected
 * ``radial_growth_sqrtpx_per_h``: slope of a least-squares line through sqrt(area) against time,
   over the colony's frames ``fit_frames`` (counted from appearance, 1 = the appearance frame; default
-  1-12), up to the frame before it first merges
+  1-12), up to the frame before it first merges (see ``merged_growth``)
   (also ``radial_growth_um_per_h``: the same slope as the radius of a disc, sqrt(area / pi), in um)
 * ``doubling_time_min`` (and ``_h``): time from the first frame >= lb px to the first frame >= ub px (default 20 and
   80: the radius doubles; MATLAB getAppearanceGrowth); NaN if the colony merged first
   or passed both thresholds between two scans
+
+``merged_growth`` (FitConfig): "exclude" (default) stops both growth metrics at the colony's first
+merge, as MATLAB. "split" also uses the merged frames, where the footprint tracker gives each
+colony its share of the merged blob (seed-tracked plates fall back to "exclude").
 """
 
 from __future__ import annotations
 
 import re
+import warnings
 from dataclasses import dataclass
 from pathlib import Path
 
 import numpy as np
 import pandas as pd
 
-from scanlag.pipeline.export import GROWTH_LB, GROWTH_UB, first_time, plate_tables
+from scanlag.pipeline.export import GROWTH_LB, GROWTH_UB, first_time, plate_tables, use_merged_frames
+from scanlag.pipeline.run import plate_info
 
 UM_PER_PX = 25400 / 300  # scans are 300 dpi
 KEY = ["scanner", "plate", "colony_id"]
@@ -44,6 +50,7 @@ class FitConfig:
     min_points: int = 4
     lb: float = GROWTH_LB  # px, doubling time from lb to ub
     ub: float = GROWTH_UB
+    merged_growth: str = "exclude"  # or "split": also use merged frames (footprint tracker)
 
 
 def parse_plates(text) -> list[int]:
@@ -97,20 +104,23 @@ def layout_template(results: Path) -> pd.DataFrame:
                          for s, p in available_plates(results).items()])
 
 
-def doubling_time(tracks: pd.DataFrame, lb: float, ub: float) -> pd.Series:
+def doubling_time(tracks: pd.DataFrame, lb: float, ub: float, use_merged: bool = False) -> pd.Series:
     """colony_id -> hours from the first frame >= lb px to the first >= ub px (one plate). NaN if the
-    colony merged before reaching ub, never reached it, or passed both between two scans."""
-    t_lb, t_ub = first_time(tracks, lb, own_only=True), first_time(tracks, ub, own_only=True)
-    first_merge = tracks[tracks.merged].groupby("colony_id").time_min.min().reindex(t_ub.index)
-    growth = (t_ub - t_lb.reindex(t_ub.index)).where(~(first_merge <= t_ub))
+    colony merged before reaching ub (unless ``use_merged``), never reached it, or passed both
+    between two scans."""
+    t_lb, t_ub = first_time(tracks, lb, own_only=not use_merged), first_time(tracks, ub, own_only=not use_merged)
+    growth = t_ub - t_lb.reindex(t_ub.index)
+    if not use_merged:
+        first_merge = tracks[tracks.merged].groupby("colony_id").time_min.min().reindex(t_ub.index)
+        growth = growth.where(~(first_merge <= t_ub))
     return growth.where(growth > 0) / 60
 
 
-def radial_growth(tracks: pd.DataFrame, cfg: FitConfig) -> pd.DataFrame:
+def radial_growth(tracks: pd.DataFrame, cfg: FitConfig, use_merged: bool = False) -> pd.DataFrame:
     """Per colony: slope of sqrt(area) vs time (px^0.5 / h) over its frames fit_first..fit_last
-    (counted from appearance), stopping before the colony first merges."""
+    (counted from appearance), stopping before the colony first merges (unless ``use_merged``)."""
     t = tracks[tracks.area_px > 0]
-    first_merge = t[t.merged].groupby(KEY).frame.min().rename("first_merge")
+    first_merge = t[t.merged & (not use_merged)].groupby(KEY).frame.min().rename("first_merge")
     appear = t.groupby(KEY).frame.min().rename("appear")
     t = t.join(first_merge, on=KEY).join(appear, on=KEY)
     k = t.frame - t.appear + 1
@@ -146,10 +156,13 @@ def collect(results: Path, layout: pd.DataFrame, cfg: FitConfig = FitConfig()) -
         if not (plate_dir / "colonies.parquet").exists():
             missing.append(f"{r.scanner} plate {r.plate}")
             continue
-        col, tr, _ = plate_tables(plate_dir)
+        with warnings.catch_warnings():  # use_merged_frames below warns once per plate
+            warnings.simplefilter("ignore")
+            col, tr, _ = plate_tables(plate_dir, cfg.merged_growth)
+        use_merged = use_merged_frames(plate_info(plate_dir), cfg.merged_growth)
         col, tr = col[col.included], tr[tr.included]
         tr = tr.drop(columns="included")
-        growth = radial_growth(tr, cfg).set_index("colony_id")
+        growth = radial_growth(tr, cfg, use_merged).set_index("colony_id")
         slope = col.colony_id.map(growth.slope)
         col = col.assign(
             condition=r.condition,
@@ -157,7 +170,7 @@ def collect(results: Path, layout: pd.DataFrame, cfg: FitConfig = FitConfig()) -
             radial_growth_um_per_h=(slope / np.sqrt(np.pi) * UM_PER_PX).to_numpy(),
             radial_fit_r2=col.colony_id.map(growth.r2).to_numpy(),
             radial_fit_points=col.colony_id.map(growth.n).fillna(0).astype(int).to_numpy(),
-            doubling_time_h=col.colony_id.map(doubling_time(tr, cfg.lb, cfg.ub)).to_numpy(),
+            doubling_time_h=col.colony_id.map(doubling_time(tr, cfg.lb, cfg.ub, use_merged)).to_numpy(),
         )
         col = col.assign(
             doubling_time_min=col.doubling_time_h * 60,

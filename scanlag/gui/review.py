@@ -7,7 +7,14 @@ Colony numbers use PlateAnalyzer's colours: white, red when the colony appears i
 near the border, yellow excluded.
 
 New: colonies with a suspicious track or shape (``scanlag.pipeline.flags``) are listed on the right
-and marked on the plate with an orange "!" and a ring. F / Shift+F step through them.
+and marked on the plate with an orange "!" and a ring. F / Shift+F step through them. The box above
+the list shows one kind of flag only (e.g. "large at appearance", pieces split off a neighbour);
+"Exclude selected" excludes the colonies selected in the list (Ctrl/Shift+click for several) and
+"Exclude all listed" every included colony the list shows.
+
+With the footprint tracker (the default), merged colonies keep their own colour and the line
+where their blob was split is drawn in white ("Labels only") or as outlines. With the seed tracker,
+a blob holding several colonies is white.
 
 Decisions are saved as they are made (colonies.parquet + an append-only review.json log), so
 the window can be closed and reopened. "Finish && export" writes the CSV tables.
@@ -23,6 +30,7 @@ PageUp/PageDown previous/next plate, F/Shift+F next/previous flagged colony.
 from __future__ import annotations
 
 import json
+import re
 import sys
 import threading
 import time
@@ -47,12 +55,13 @@ from scanlag.detect.classical import subtract_background
 from scanlag.io.matlab_import import ColonyStatus
 from scanlag.io.raw import read_scan
 from scanlag.pipeline.plates import crop
+from scanlag.pipeline.run import merged_area_is_own
 
 VALID, BORDER, EXCLUDED, ZERO = (int(s) for s in ColonyStatus)
 STATUS_RGB = {BORDER: (255, 0, 255), EXCLUDED: (255, 255, 0), ZERO: (128, 128, 128)}
 STATUS_TEXT = {VALID: "white", BORDER: "magenta", EXCLUDED: "yellow", ZERO: "0.6"}
 UNASSIGNED_RGB = (90, 90, 90)  # blobs that are no colony (too small, never tracked)
-MERGED_RGB = (255, 255, 255)
+MERGED_RGB = (255, 255, 255)  # seed tracker: a blob holding several colonies; footprint: their split line
 FLAG_COLOR = "#ff8c00"
 
 
@@ -70,6 +79,8 @@ class PlateData:
         self.colonies = pd.read_parquet(self.dir / "colonies.parquet")
         self.tracks = pd.read_parquet(self.dir / "tracks.parquet")
         self.labels = zarr.open_array(str(self.dir / "labels.zarr"), mode="r")
+        # colony IDs per pixel (footprint tracker); None for the seed tracker
+        self.own = zarr.open_array(str(self.dir / "colonies.zarr"), mode="r") if merged_area_is_own(self.info) else None
         self.mask = np.array(Image.open(self.dir / "mask.png")).astype(bool)
         self.times = np.asarray(self.info["times_min"], float)
         self.n_frames, self.n = len(self.times), len(self.colonies)
@@ -84,11 +95,11 @@ class PlateData:
         self.merged[t, c] = self.tracks.merged
         self.cx[t, c], self.cy[t, c] = self.tracks.x, self.tracks.y
         self.blob[t, c] = self.tracks.blob
-        # merged colonies report the blob's centroid; show them at their own seed instead
-        seed_x = np.r_[0, self.colonies.seed_x.to_numpy()]
-        seed_y = np.r_[0, self.colonies.seed_y.to_numpy()]
-        self.cx = np.where(self.merged, seed_x[None, :], self.cx)
-        self.cy = np.where(self.merged, seed_y[None, :], self.cy)
+        if self.own is None:  # merged colonies report the blob's centroid; show them at their own seed instead
+            seed_x = np.r_[0, self.colonies.seed_x.to_numpy()]
+            seed_y = np.r_[0, self.colonies.seed_y.to_numpy()]
+            self.cx = np.where(self.merged, seed_x[None, :], self.cx)
+            self.cy = np.where(self.merged, seed_y[None, :], self.cy)
         self.colors = np.array([colony_rgb(i) for i in range(self.n + 1)])
         self._images: OrderedDict[int, np.ndarray] = OrderedDict()
         self._lock = threading.Lock()
@@ -168,6 +179,11 @@ class PlateData:
         s = self.colonies.status
         return self.set_statuses(s.where(s != VALID, EXCLUDED), "exclude all")
 
+    def exclude(self, ids, action: str) -> int:
+        """Exclude the given colonies (those included)."""
+        s = self.colonies.status
+        return self.set_statuses(s.where(~(self.colonies.colony_id.isin(ids) & (s == VALID)), EXCLUDED), action)
+
     def reset(self) -> int:
         """Undo all review changes: back to the statuses the detection gave."""
         return self.set_statuses(self.colonies.auto_status, "reset")
@@ -182,7 +198,11 @@ class PlateData:
     def colony_at(self, k: int, x: float, y: float) -> int | None:
         """Colony under (x, y) in frame k, else the nearest one within 10 px."""
         xi, yi = int(round(x)), int(round(y))
-        if 0 <= yi < self.mask.shape[0] and 0 <= xi < self.mask.shape[1]:
+        if self.own is not None and 0 <= yi < self.mask.shape[0] and 0 <= xi < self.mask.shape[1]:
+            c = int(self.own[k, yi, xi])
+            if c:
+                return c
+        elif 0 <= yi < self.mask.shape[0] and 0 <= xi < self.mask.shape[1]:
             lab = int(self.labels[k, yi, xi])
             if lab:
                 hits = np.nonzero(self.blob[k] == lab)[0]
@@ -323,10 +343,21 @@ class ReviewWindow(QtWidgets.QMainWindow):
 
         side = QtWidgets.QVBoxLayout()
         side.addWidget(QtWidgets.QLabel("<b>Flagged colonies</b> (check these)"))
+        self.flag_kind = QtWidgets.QComboBox()
+        self.flag_kind.currentIndexChanged.connect(self.change_flag_kind)
+        side.addWidget(self.flag_kind)
         self.flag_list = QtWidgets.QListWidget()
         self.flag_list.setMinimumWidth(330)
+        self.flag_list.setSelectionMode(QtWidgets.QAbstractItemView.ExtendedSelection)
         self.flag_list.currentRowChanged.connect(self.flag_row_selected)
         side.addWidget(self.flag_list, 1)
+        flag_buttons = QtWidgets.QHBoxLayout()
+        for text, slot in (("Exclude selected", self.exclude_selected_flagged),
+                           ("Exclude all listed", self.exclude_listed_flagged)):
+            b = QtWidgets.QPushButton(text)
+            b.clicked.connect(slot)
+            flag_buttons.addWidget(b)
+        side.addLayout(flag_buttons)
         self.info_label = QtWidgets.QLabel()
         self.info_label.setWordWrap(True)
         self.info_label.setTextFormat(QtCore.Qt.RichText)
@@ -364,6 +395,7 @@ class ReviewWindow(QtWidgets.QMainWindow):
         self.k = self.plate.n_frames - 1
         self.levels = {}
         self.auto_levels()
+        self.fill_flag_kinds()
         self.fill_flag_list()
         self.redraw_all()
 
@@ -450,15 +482,28 @@ class ReviewWindow(QtWidgets.QMainWindow):
         """``fast`` (while dragging the slider) skips the colony numbers."""
         p, k = self.plate, self.k
         labels = np.asarray(p.labels[k])
-        lut = np.tile(np.array(UNASSIGNED_RGB, np.uint8), (int(labels.max()) + 1, 1))
         present = np.nonzero(p.area[k] > 0)[0]
         present = present[present > 0]
-        for c in present:
-            b = p.blob[k, c]
-            lut[b] = MERGED_RGB if p.merged[k, c] else self.colony_status_rgb(c)
+        if p.own is None:
+            lut = np.tile(np.array(UNASSIGNED_RGB, np.uint8), (int(labels.max()) + 1, 1))
+            for c in present:
+                b = p.blob[k, c]
+                lut[b] = MERGED_RGB if p.merged[k, c] else self.colony_status_rgb(c)
+        else:  # colony IDs, and n + 1 for detected objects that are no colony
+            own = np.asarray(p.own[k]).astype(np.int64)
+            labels = np.where(own > 0, own, np.where(labels > 0, p.n + 1, 0))
+            lut = np.tile(np.array(UNASSIGNED_RGB, np.uint8), (p.n + 2, 1))
+            for c in present:
+                lut[c] = self.colony_status_rgb(c)
         if self.checks["Labels only"].isChecked():
             rgb = lut[labels]
             rgb[labels == 0] = 0
+            if p.own is not None:  # the split lines between merged colonies
+                merged = np.zeros(p.n + 2, bool)
+                merged[: p.n + 1] = p.merged[k]
+                split = find_boundaries(labels, mode="inner") & ~find_boundaries(labels > 0, mode="inner")
+                split &= merged[labels]
+                rgb[split] = MERGED_RGB
         else:
             rgb = self.display_rgb(k)
             if self.checks["Outlines"].isChecked():
@@ -520,10 +565,11 @@ class ReviewWindow(QtWidgets.QMainWindow):
         self.lines = {}
         show_excl = self.checks["Show excluded"].isChecked()
         flagged_only = self.checks["Flagged only"].isChecked()
+        listed = set(self._flag_ids)
         hours = p.times / 60
         for c in range(1, p.n + 1):
             s = p.status(c)
-            if (s != VALID and not show_excl) or (flagged_only and not p.flags(c)):
+            if (s != VALID and not show_excl) or (flagged_only and c not in listed):
                 continue
             a = np.where(p.area[:, c] > 0, p.area[:, c], np.nan)
             color = p.colors[c] / 255 if s == VALID else np.array(STATUS_RGB[s]) / 255
@@ -650,12 +696,37 @@ class ReviewWindow(QtWidgets.QMainWindow):
             self._after_bulk(f"{self.plate.reset()} colonies reset to their detected status (saved)")
 
     # ---------- flagged list ----------
+    ALL_FLAGS = "All flags"
+
+    @staticmethod
+    def flag_kinds(flags: str) -> list[str]:
+        """'gap (3 frames); jump x2.1' -> ['gap', 'jump']: the flag names without their numbers."""
+        return [re.split(r" \(| x\d| to \d", f)[0] for f in flags.split("; ") if f]
+
     def flagged_ids(self) -> list[int]:
         col = self.plate.colonies
         f = col[(col.n_flags > 0) & ((col.status == VALID) | (col.status == EXCLUDED))]
+        kind = self.flag_kind.currentText()
+        if kind and kind != self.ALL_FLAGS:
+            f = f[[kind in self.flag_kinds(x) for x in f["flags"]]]
         return f.sort_values(["status", "n_flags"], ascending=[True, False]).colony_id.tolist()
 
-    def fill_flag_list(self):
+    def fill_flag_kinds(self):
+        """The flag kinds on this plate, with their counts; keeps the chosen kind if it is still there."""
+        col = self.plate.colonies
+        col = col[(col.n_flags > 0) & ((col.status == VALID) | (col.status == EXCLUDED))]
+        counts = pd.Series([k for x in col["flags"] for k in set(self.flag_kinds(x))], dtype=str).value_counts()
+        current = self.flag_kind.currentText()
+        self.flag_kind.blockSignals(True)
+        self.flag_kind.clear()
+        self.flag_kind.addItem(self.ALL_FLAGS)
+        for kind, n in counts.items():
+            self.flag_kind.addItem(kind)
+            self.flag_kind.setItemData(self.flag_kind.count() - 1, f"{n} colonies", QtCore.Qt.ToolTipRole)
+        self.flag_kind.setCurrentIndex(max(self.flag_kind.findText(current), 0))
+        self.flag_kind.blockSignals(False)
+
+    def fill_flag_list(self, *_):
         self.flag_list.blockSignals(True)
         self.flag_list.clear()
         self._flag_ids = self.flagged_ids()
@@ -665,6 +736,28 @@ class ReviewWindow(QtWidgets.QMainWindow):
             item.setForeground(QtGui.QColor("#b35900" if s == VALID else "#888888"))
             self.flag_list.addItem(item)
         self.flag_list.blockSignals(False)
+
+    def change_flag_kind(self, _=None):
+        self.fill_flag_list()
+        if self.checks["Flagged only"].isChecked():
+            self.draw_graph()
+
+    def _exclude_flagged(self, ids: list[int], what: str):
+        ids = [c for c in ids if self.plate.status(c) == VALID]
+        if not ids:
+            self.status.showMessage(f"no included colonies {what}", 3000)
+            return
+        kind = self.flag_kind.currentText()
+        if self._confirm("Exclude flagged", f"Exclude {len(ids)} included colonies {what} ({kind.lower()})?"):
+            n = self.plate.exclude(ids, f"exclude flagged: {kind}")
+            self._after_bulk(f"{n} flagged colonies excluded (saved)")
+
+    def exclude_selected_flagged(self):
+        rows = sorted(i.row() for i in self.flag_list.selectedIndexes())
+        self._exclude_flagged([self._flag_ids[r] for r in rows], "selected in the list")
+
+    def exclude_listed_flagged(self):
+        self._exclude_flagged(list(self._flag_ids), "in the list")
 
     def flag_row_selected(self, row: int):
         if 0 <= row < len(self._flag_ids):

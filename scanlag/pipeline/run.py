@@ -1,10 +1,13 @@
 """Segment and track every plate of one scanner, straight from the raw scans.
 
 Per frame, the scan is read once (memory-mapped). Every plate is cropped at its aligned
-position, segmented by the chosen detector, and its colonies are tracked with MATLAB's
-seed-pixel tracker (``scanlag.track.seed_tracker``). Outputs per plate, under
-``<results>/<scanner>/plate_<k>/``: plate.json, mask.png, labels.zarr, tracks.parquet,
-colonies.parquet (see ``write_plate``).
+position, segmented by the chosen detector, and its colonies are tracked. The default
+footprint tracker (``scanlag.track.tracker``) keeps each colony's own pixels and splits merged
+blobs between their colonies; ``tracker="seed"`` is MATLAB's seed-pixel tracker
+(``scanlag.track.seed_tracker``), where merged colonies all report the blob. Outputs per plate,
+under ``<results>/<scanner>/plate_<k>/``: plate.json, mask.png, labels.zarr (detected objects),
+colonies.zarr (colony IDs, footprint tracker only), tracks.parquet, colonies.parquet (see
+``write_plate``). ``retrack_plate`` tracks an already segmented plate again from its labels.zarr.
 
 Detectors:
 * ``classical``: MATLAB's threshold (im2L.m), with contrast limits from the plate's last frame
@@ -15,6 +18,7 @@ from __future__ import annotations
 
 import collections
 import json
+import shutil
 import time
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
@@ -34,6 +38,7 @@ from scanlag.pipeline.scans import Scanner
 from scanlag.store import ResultsStore
 from scanlag.testset.tiles import PREVIOUS_GAP
 from scanlag.track.seed_tracker import MIN_AREA, SeedTracker, border_status
+from scanlag.track.tracker import FootprintTracker
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 MODELS = {
@@ -50,6 +55,7 @@ class RunConfig:
     threshold: float = DEFAULT_THRESHOLD  # classical only
     min_upper_limit: float = 0.06  # classical only: floor on the contrast stretch's upper limit
     min_area: int = MIN_AREA  # px; smaller unmatched blobs don't start a colony
+    tracker: str = "footprint"  # or "seed" (MATLAB: merged colonies report the merged blob)
 
 
 class ClassicalSegmenter:
@@ -107,6 +113,14 @@ def make_segmenter(cfg: RunConfig, log=print):
     return ModelSegmenter(MODELS.get(cfg.detector, Path(cfg.detector)))
 
 
+def make_tracker(cfg: RunConfig):
+    if cfg.tracker == "footprint":
+        return FootprintTracker(cfg.min_area)
+    if cfg.tracker == "seed":
+        return SeedTracker(cfg.min_area)
+    raise ValueError(f"unknown tracker {cfg.tracker!r} (footprint or seed)")
+
+
 def process_scanner(scanner: Scanner, store: ResultsStore, cfg: RunConfig, log=print) -> list[Path]:
     t0 = time.time()
     n = len(scanner.scans)
@@ -135,7 +149,11 @@ def process_scanner(scanner: Scanner, store: ResultsStore, cfg: RunConfig, log=p
 
     out = {p.number: (scanner.name, f"plate_{p.number}") for p in plates}
     labels_out = {p.number: store.create_labels((n, size[p.number], size[p.number]), *out[p.number], "labels.zarr") for p in plates}
-    trackers = {p.number: SeedTracker(cfg.min_area) for p in plates}
+    trackers = {p.number: make_tracker(cfg) for p in plates}
+    colonies_out = {}
+    if cfg.tracker == "footprint":
+        colonies_out = {p.number: store.create_labels((n, size[p.number], size[p.number]), *out[p.number], "colonies.zarr")
+                        for p in plates}
     shifts = {p.number: [] for p in plates}
     history = {p.number: collections.deque(maxlen=PREVIOUS_GAP + 1) for p in plates}
 
@@ -153,7 +171,9 @@ def process_scanner(scanner: Scanner, store: ResultsStore, cfg: RunConfig, log=p
             hist.append(im)
             labels = seg.segment(p.number, im, backgrounds[p.number], hist[0], masks[p.number])
             labels_out[p.number][k] = labels.astype(np.uint16)
-            trackers[p.number].update(labels, int(labels.max()))
+            own = trackers[p.number].update(labels, int(labels.max()))
+            if p.number in colonies_out:
+                colonies_out[p.number][k] = own.astype(np.uint16)
         bar.update()
     bar.close()
     log(f"{scanner.name}: segmented in {(time.time() - t0) / 60:.1f} min")
@@ -161,17 +181,38 @@ def process_scanner(scanner: Scanner, store: ResultsStore, cfg: RunConfig, log=p
     dirs = []
     for p in plates:
         dirs.append(write_plate(store, out[p.number], scanner, p, cfg, seg, masks[p.number], shifts[p.number],
-                                trackers[p.number], labels_out[p.number]))
+                                trackers[p.number], labels_out[p.number], colonies_out.get(p.number)))
     return dirs
 
 
 def write_plate(store, out, scanner: Scanner, plate: Plate, cfg: RunConfig, seg, mask, shifts,
-                tracker: SeedTracker, labels) -> Path:
+                tracker, labels, own=None) -> Path:
     detector = seg.name
+    times = np.asarray(scanner.times_min)
+    tracks, colonies = track_tables(tracker, times, mask, labels, own)
+    x0, y0, s = plate.crop
+    store.write_json({
+        "scanner": scanner.name, "scanner_label": scanner.label, "plate": plate.number,
+        "raw_dir": scanner.directory, "raw_scans": [p.name for p in scanner.scans],
+        "times_min": times, "start_time": scanner.start.isoformat(sep=" "),
+        "circle": plate.to_dict(), "crop_xy_size": [x0, y0, s],
+        "shift_xy": shifts, "mask_fraction": cfg.mask_fraction,
+        "detector": detector, "threshold": cfg.threshold if detector == "classical" else None,
+        "contrast_limits": getattr(seg, "limits", {}).get(plate.number),
+        "min_area": cfg.min_area, "tracker": cfg.tracker,
+    }, *out, "plate.json")
+    store.write_mask(mask, *out, "mask.png")
+    store.write_table(tracks, *out, "tracks.parquet")
+    store.write_table(colonies, *out, "colonies.parquet")
+    return store.path(*out)
+
+
+def track_tables(tracker, times: np.ndarray, mask: np.ndarray, labels, own=None) -> tuple[pd.DataFrame, pd.DataFrame]:
+    """(tracks, colonies) tables of a plate from its tracker, with automatic statuses and flags."""
     area, centroid, blob = tracker.tracks.as_arrays()
     n_frames, n_col = area.shape
-    times = np.asarray(scanner.times_min)
-    # merged: the colony's blob holds another colony's seed too
+    # merged: the colony shares its blob with another colony. With the seed tracker its area is
+    # then the blob's; the footprint tracker gives it its share of the blob.
     merged = np.zeros_like(area, bool)
     for k in range(n_frames):
         b = blob[k]
@@ -204,23 +245,50 @@ def write_plate(store, out, scanner: Scanner, plate: Plate, cfg: RunConfig, seg,
         "seed_x": [c for _, c in seeds],
         "seed_y": [r for r, _ in seeds],
     })
-    colonies = colonies.join(colony_flags(area, merged, blob, labels).set_index("colony_id"), on="colony_id")
+    colonies = colonies.join(colony_flags(area, merged, blob, labels, own).set_index("colony_id"), on="colony_id")
+    return tracks, colonies
 
-    x0, y0, s = plate.crop
-    store.write_json({
-        "scanner": scanner.name, "scanner_label": scanner.label, "plate": plate.number,
-        "raw_dir": scanner.directory, "raw_scans": [p.name for p in scanner.scans],
-        "times_min": times, "start_time": scanner.start.isoformat(sep=" "),
-        "circle": plate.to_dict(), "crop_xy_size": [x0, y0, s],
-        "shift_xy": shifts, "mask_fraction": cfg.mask_fraction,
-        "detector": detector, "threshold": cfg.threshold if detector == "classical" else None,
-        "contrast_limits": getattr(seg, "limits", {}).get(plate.number),
-        "min_area": cfg.min_area,
-    }, *out, "plate.json")
-    store.write_mask(mask, *out, "mask.png")
-    store.write_table(tracks, *out, "tracks.parquet")
-    store.write_table(colonies, *out, "colonies.parquet")
-    return store.path(*out)
+
+def retrack_plate(store: ResultsStore, plate_dir: Path, tracker: str = "footprint") -> dict:
+    """Track an already segmented plate again from its labels.zarr, without reading the scans.
+
+    Rewrites tracks.parquet, colonies.parquet, colonies.zarr (footprint tracker) and the tracker in
+    plate.json. Colony IDs change, so review decisions can't carry over: the old colonies.parquet and
+    review.json are kept as colonies.<old tracker>.bak.parquet and review.<old tracker>.bak.json, and
+    the plate is reviewed afresh. Returns the old and new colony counts.
+    """
+    import zarr
+    from PIL import Image
+
+    plate_dir = Path(plate_dir)
+    rel = plate_dir.resolve().relative_to(store.root).parts
+    info = plate_info(plate_dir)
+    cfg = RunConfig(tracker=tracker, min_area=info.get("min_area", MIN_AREA))
+    labels = zarr.open_array(str(plate_dir / "labels.zarr"), mode="r")
+    mask = np.array(Image.open(plate_dir / "mask.png")).astype(bool)
+    times = np.asarray(info["times_min"], float)
+
+    old = info.get("tracker", "seed")
+    n_old = len(pd.read_parquet(plate_dir / "colonies.parquet"))
+    for name, suffix in [("colonies", ".parquet"), ("review", ".json")]:
+        if (plate_dir / f"{name}{suffix}").exists():
+            (plate_dir / f"{name}{suffix}").replace(store.path(*rel, f"{name}.{old}.bak{suffix}"))
+    if (plate_dir / "colonies.zarr").exists():
+        shutil.rmtree(store.path(*rel, "colonies.zarr"))
+
+    tr = make_tracker(cfg)
+    own_out = store.create_labels(labels.shape, *rel, "colonies.zarr") if tracker == "footprint" else None
+    for k in range(labels.shape[0]):
+        lab = np.asarray(labels[k]).astype(np.int32)
+        own = tr.update(lab, int(lab.max()))
+        if own_out is not None:
+            own_out[k] = own.astype(np.uint16)
+    tracks, colonies = track_tables(tr, times, mask, labels, own_out)
+    store.write_json(info | {"tracker": tracker, "min_area": cfg.min_area}, *rel, "plate.json")
+    store.write_table(tracks, *rel, "tracks.parquet")
+    store.write_table(colonies, *rel, "colonies.parquet")
+    return {"old_tracker": old, "old_colonies": n_old, "colonies": len(colonies),
+            "flagged": int((colonies.n_flags > 0).sum())}
 
 
 def refresh_flags(plate_dir: Path) -> int:
@@ -233,11 +301,12 @@ def refresh_flags(plate_dir: Path) -> int:
     colonies = pd.read_parquet(plate_dir / "colonies.parquet")
     tracks = pd.read_parquet(plate_dir / "tracks.parquet")
     labels = zarr.open_array(str(plate_dir / "labels.zarr"), mode="r")
+    own = zarr.open_array(str(plate_dir / "colonies.zarr"), mode="r") if merged_area_is_own(plate_info(plate_dir)) else None
     shape = (labels.shape[0], len(colonies))
     area, merged, blob = np.zeros(shape, np.int64), np.zeros(shape, bool), np.zeros(shape, np.int64)
     t, c = tracks.frame.to_numpy(), tracks.colony_id.to_numpy() - 1
     area[t, c], merged[t, c], blob[t, c] = tracks.area_px, tracks.merged, tracks.blob
-    flags = colony_flags(area, merged, blob, labels).set_index("colony_id")
+    flags = colony_flags(area, merged, blob, labels, own).set_index("colony_id")
     colonies = colonies.drop(columns=["flags", "n_flags"]).join(flags, on="colony_id")
     colonies.to_parquet(plate_dir / "colonies.parquet", index=False)
     return int((colonies.n_flags > 0).sum())
@@ -249,3 +318,9 @@ def load_plate_dirs(results: Path) -> list[Path]:
 
 def plate_info(plate_dir: Path) -> dict:
     return json.loads((Path(plate_dir) / "plate.json").read_text())
+
+
+def merged_area_is_own(info: dict) -> bool:
+    """True if a merged colony's area is its own share (footprint tracker), not the merged blob's.
+    Plates processed before the footprint tracker existed have no "tracker" key."""
+    return info.get("tracker", "seed") == "footprint"

@@ -3,10 +3,17 @@
 Per plate (``<results>/<scanner>/plate_<k>/``):
 
 * ``tracks.csv``: one row per colony and frame: frame, time_min, time_h, colony_id, area_px, x, y,
-  merged (the area is that of a blob holding several colonies), included
+  merged (the colony shares a blob with another colony: with the footprint tracker the area is its
+  share of the blob, with the seed tracker the whole blob's), included
 * ``colonies.csv``: one row per colony: status (0 included, 1 near border, 2 excluded by the
   reviewer, 3 zero final area), appearance time, time from LB to UB px (MATLAB
-  getAppearanceGrowth, NaN if the colony merged before reaching UB), final area, flags
+  getAppearanceGrowth, NaN if the colony merged before reaching UB, see ``merged_growth``), final
+  area, flags
+
+``merged_growth``: "exclude" (default, as MATLAB) ignores the frames where a colony is merged, so a
+colony that merges before reaching UB has no growth time. "split" uses its share of the merged
+blob instead; it needs plates tracked by the footprint tracker (seed-tracked plates fall back to
+"exclude", with a warning).
 * ``area_matrix.csv``: time x colony area table of the included colonies (MATLAB's ``Area``)
 
 Experiment level (``<results>/``): ``all_colonies.csv``, ``all_tracks.csv`` (with scanner and plate
@@ -16,6 +23,7 @@ columns) and ``summary.csv`` (colony counts per plate).
 from __future__ import annotations
 
 import json
+import warnings
 from pathlib import Path
 
 import numpy as np
@@ -25,6 +33,22 @@ from scanlag.io.matlab_import import ColonyStatus
 from scanlag.store import ResultsStore
 
 GROWTH_LB, GROWTH_UB = 20, 80  # px, MATLAB getAppearanceGrowth defaults
+MERGED_GROWTH = ("exclude", "split")
+
+
+def use_merged_frames(info: dict, merged_growth: str) -> bool:
+    """Whether growth metrics may use the frames where a colony is merged (see ``merged_growth``)."""
+    from scanlag.pipeline.run import merged_area_is_own
+
+    if merged_growth not in MERGED_GROWTH:
+        raise ValueError(f"merged_growth must be one of {MERGED_GROWTH}, not {merged_growth!r}")
+    if merged_growth == "exclude":
+        return False
+    if not merged_area_is_own(info):
+        warnings.warn(f"{info['scanner']} plate {info['plate']} was tracked with the seed tracker: merged colonies "
+                      "report the whole blob, so their merged frames are excluded from growth")
+        return False
+    return True
 
 
 def first_time(tracks: pd.DataFrame, area: float, own_only: bool) -> pd.Series:
@@ -32,20 +56,23 @@ def first_time(tracks: pd.DataFrame, area: float, own_only: bool) -> pd.Series:
     return t.groupby("colony_id").time_min.min()
 
 
-def plate_tables(plate_dir: Path) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
+def plate_tables(plate_dir: Path, merged_growth: str = "exclude") -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
     info = json.loads((plate_dir / "plate.json").read_text())
+    use_merged = use_merged_frames(info, merged_growth)
     colonies = pd.read_parquet(plate_dir / "colonies.parquet")
     tracks = pd.read_parquet(plate_dir / "tracks.parquet")
     included = colonies.set_index("colony_id").status == ColonyStatus.VALID
     tracks = tracks.assign(time_h=tracks.time_min / 60,
                            included=tracks.colony_id.map(included).fillna(False).astype(bool))
 
-    lb = first_time(tracks, GROWTH_LB, own_only=True)
-    ub = first_time(tracks, GROWTH_UB, own_only=True)
+    lb = first_time(tracks, GROWTH_LB, own_only=not use_merged)
+    ub = first_time(tracks, GROWTH_UB, own_only=not use_merged)
     first_merge = tracks[tracks.merged].groupby("colony_id").time_min.min()
     ids = colonies.colony_id
-    reached_ub_alone = ub.reindex(ids).notna() & ~(first_merge.reindex(ids) <= ub.reindex(ids)).fillna(False)
-    growth = (ub.reindex(ids) - lb.reindex(ids)).where(reached_ub_alone.to_numpy())
+    reached_ub = ub.reindex(ids).notna()
+    if not use_merged:
+        reached_ub &= ~(first_merge.reindex(ids) <= ub.reindex(ids)).fillna(False)
+    growth = (ub.reindex(ids) - lb.reindex(ids)).where(reached_ub.to_numpy())
     colonies = colonies.assign(
         status_name=[ColonyStatus(s).name for s in colonies.status],
         included=colonies.status == ColonyStatus.VALID,

@@ -32,6 +32,11 @@ Growth (--growth):
             range set with --doubling-range
   both      both histograms (the tables always hold both)
 
+Merged colonies (--merged-growth):
+  exclude   (default, as MATLAB) both growth metrics stop at the colony's first merge
+  split     also use the merged frames, where the footprint tracker gives each colony its share
+            of the merged blob (plates tracked with --tracker seed fall back to exclude)
+
 Bins: appearance and doubling-time histograms use the scan interval as bin width (--bin to change,
 in minutes); the radial growth histogram uses 0.05 px^0.5/h (--rate-bin). The x axes run from 0 to 1.1 x the
 largest value. The page opens in the default browser (--no-open to skip).
@@ -87,6 +92,8 @@ def main() -> None:
     parser.add_argument("--bin", type=float, help="bin width of the time histograms, min (default: scan interval)")
     parser.add_argument("--rate-bin", type=float, default=0.05,
                         help="bin width of the radial growth histogram, px^0.5/h (default 0.05)")
+    parser.add_argument("--merged-growth", choices=["exclude", "split"], default="exclude",
+                        help="use the frames where a colony is merged with another for growth (default exclude)")
     parser.add_argument("--no-open", action="store_true", help="don't open the histograms in the browser")
     args = parser.parse_args(split_prompt_args(sys.argv[1:]))
 
@@ -115,7 +122,7 @@ def main() -> None:
     lb, ub = args.doubling_range
     if not (first.strip().isdigit() and last.strip().isdigit()) or not 1 <= int(first) < int(last) or not 0 < lb < ub:
         sys.exit("--fit-frames takes FIRST-LAST (e.g. 1-12) and --doubling-range LB UB with 0 < LB < UB")
-    cfg = FitConfig(fit_first=int(first), fit_last=int(last), lb=lb, ub=ub)
+    cfg = FitConfig(fit_first=int(first), fit_last=int(last), lb=lb, ub=ub, merged_growth=args.merged_growth)
     data = collect(results, layout, cfg)
     for m in data.missing:
         print(f"warning: no results for {m} (empty slot or not processed), skipped")
