@@ -65,19 +65,19 @@ class FootprintTracker:
         for b, cs in owners.items():
             if len(cs) == 1:
                 lut[b] = cs[0]
+        # New colonies go in the same lookup table: their blobs are disjoint from the split ones
+        blob_area, blob_centroid = blob_properties(labels, n)
+        for b in range(1, n + 1):
+            if b not in owners and blob_area[b - 1] >= self.min_area:
+                x, y = matlab_round(blob_centroid[b - 1])
+                seeds.append((int(y) - 1, int(x) - 1))
+                lut[b] = len(seeds)
         own = lut[labels]
 
         objects = ndi.find_objects(labels, max_label=n)
         for b, cs in owners.items():
             if len(cs) > 1:
                 self._split(labels, prev, b, cs, objects[b - 1], own)
-
-        blob_area, blob_centroid = blob_properties(labels, n)
-        for b in range(1, n + 1):
-            if b not in owners and blob_area[b - 1] >= self.min_area:
-                x, y = matlab_round(blob_centroid[b - 1])
-                seeds.append((int(y) - 1, int(x) - 1))
-                own[labels == b] = len(seeds)
 
         n_col = len(seeds)
         area, centroid = colony_properties(own, n_col)
@@ -129,9 +129,9 @@ class FootprintTracker:
         main = np.zeros(n_col, np.int64)
         both = own > 0
         if both.any():
-            pairs, counts = np.unique(own[both].astype(np.int64) * (labels.max() + 1) + labels[both],
-                                      return_counts=True)
-            col, blob = pairs // (labels.max() + 1), pairs % (labels.max() + 1)
+            base = labels.max() + 1
+            pairs, counts = np.unique(own[both].astype(np.int64) * base + labels[both], return_counts=True)
+            col, blob = pairs // base, pairs % base
             order = np.lexsort((counts, col))  # per colony, the largest count last
             main[col[order] - 1] = blob[order]
         return main

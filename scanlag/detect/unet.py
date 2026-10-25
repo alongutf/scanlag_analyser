@@ -19,6 +19,7 @@ than one pixel at the network's finest decoder level.
 from __future__ import annotations
 
 import json
+import threading
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -76,6 +77,7 @@ class UNetDetector:
     core: float = 0.7
     min_size: int = 5
     _net: object = field(default=None, repr=False)
+    _gpu: threading.Lock = field(default_factory=threading.Lock, repr=False, compare=False)  # one forward pass at a time
 
     def __post_init__(self):
         self.model_dir = Path(self.model_dir)
@@ -100,19 +102,40 @@ class UNetDetector:
 
     @torch.no_grad()
     def predict(self, x: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
-        """Foreground probability and distance map at the input's (native) resolution."""
-        net = self.net()
-        device = next(net.parameters()).device
-        h, w = x.shape[:2]
+        """Foreground probability and distance map at the input's (native) resolution.
+
+        Thread-safe. The lock covers only queueing the work on the GPU: the input is laid out in
+        page-locked memory before it, and the result is awaited after it, so other threads can
+        prepare their input and queue their own pass meanwhile.
+        """
+        cuda = torch.cuda.is_available()
+        t = torch.from_numpy(np.ascontiguousarray(x.transpose(2, 0, 1), np.float32)[None])
+        if cuda:
+            t = t.pin_memory()
+        with self._gpu:
+            net = self.net()
+            device = next(net.parameters()).device
+            y = self._forward(net, t.to(device, non_blocking=True), x.shape[:2])
+            out = torch.empty(y.shape, pin_memory=cuda)
+            out.copy_(y, non_blocking=cuda)
+            if cuda:
+                done = torch.cuda.Event()
+                done.record()
+        if cuda:
+            done.synchronize()
+        out = out.numpy()
+        return out[0], out[1]
+
+    def _forward(self, net, t: torch.Tensor, size: tuple[int, int]) -> torch.Tensor:
+        h, w = size
         s = self.config["scale"]
         H, W = round(h * s), round(w * s)
-        t = torch.from_numpy(x.transpose(2, 0, 1)[None]).float().to(device)
         t = F.interpolate(t, size=(H, W), mode="bilinear", align_corners=False)
         t = F.pad(t, (0, -W % PAD, 0, -H % PAD), mode="reflect")
-        with torch.autocast(device_type=device.type, dtype=torch.bfloat16):
+        with torch.autocast(device_type=t.device.type, dtype=torch.bfloat16):
             y = net(t)[..., :H, :W].float()
         y = F.interpolate(y, size=(h, w), mode="area")[0]
-        return torch.sigmoid(y[0]).cpu().numpy(), torch.sigmoid(y[1]).cpu().numpy()
+        return torch.stack([torch.sigmoid(y[0]), torch.sigmoid(y[1])])
 
     def segment(self, images: list[np.ndarray]) -> list[np.ndarray]:
         return [instances(*self.predict(x), self.fg, self.core, self.min_size) for x in images]

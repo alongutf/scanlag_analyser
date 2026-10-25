@@ -16,6 +16,7 @@ across, so ``diameter`` rescales the tile by 30 / diameter before segmentation.
 from __future__ import annotations
 
 import json
+import threading
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -38,6 +39,7 @@ class CellposeDetector:
     norm_limits: list | None = None  # fixed per-channel normalization (fine-tuned models)
     label: str | None = None
     _model: object = field(default=None, repr=False)
+    _gpu: threading.Lock = field(default_factory=threading.Lock, repr=False, compare=False)  # one eval at a time
 
     @property
     def name(self) -> str:
@@ -85,13 +87,14 @@ class CellposeDetector:
 
     def segment(self, images: list[np.ndarray]) -> list[np.ndarray]:
         multichannel = images[0].ndim == 3
-        masks, _, _ = self.model().eval(
-            images,
-            channel_axis=-1 if multichannel else None,
-            diameter=self.diameter,
-            normalize=self.norm_limits is None,  # fine-tuned inputs are already normalized
-            min_size=self.min_size,
-            flow_threshold=self.flow_threshold,
-            cellprob_threshold=self.cellprob_threshold,
-        )
+        with self._gpu:
+            masks, _, _ = self.model().eval(
+                images,
+                channel_axis=-1 if multichannel else None,
+                diameter=self.diameter,
+                normalize=self.norm_limits is None,  # fine-tuned inputs are already normalized
+                min_size=self.min_size,
+                flow_threshold=self.flow_threshold,
+                cellprob_threshold=self.cellprob_threshold,
+            )
         return [np.asarray(m, np.uint16) for m in masks]

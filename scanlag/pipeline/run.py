@@ -17,16 +17,18 @@ Detectors:
 from __future__ import annotations
 
 import collections
+import contextlib
 import json
+import os
 import shutil
+import threading
 import time
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import Future, ThreadPoolExecutor
 from dataclasses import dataclass
 from pathlib import Path
 
 import numpy as np
 import pandas as pd
-from scipy import ndimage as ndi
 from tqdm import tqdm
 
 from scanlag.detect.classical import DEFAULT_THRESHOLD, binarize, label_column_major, stretch_limits, subtract_background
@@ -56,6 +58,7 @@ class RunConfig:
     min_upper_limit: float = 0.06  # classical only: floor on the contrast stretch's upper limit
     min_area: int = MIN_AREA  # px; smaller unmatched blobs don't start a colony
     tracker: str = "footprint"  # or "seed" (MATLAB: merged colonies report the merged blob)
+    workers: int = 6  # plates processed in parallel threads per frame (1 = one after another)
 
 
 class ClassicalSegmenter:
@@ -97,14 +100,24 @@ class ModelSegmenter:
 
     def segment(self, plate: int, image, background, previous, mask) -> np.ndarray:
         labels = self.det.segment([self.det.prepare(image, background, previous)])[0].astype(np.int32)
-        ids = np.unique(labels)[1:]
-        if len(ids):  # keep objects whose centroid is in the working area, renumbered 1..n
-            cy, cx = np.array(ndi.center_of_mass(np.ones_like(labels), labels, ids)).round().astype(int).T
-            keep = ids[mask[np.clip(cy, 0, mask.shape[0] - 1), np.clip(cx, 0, mask.shape[1] - 1)]]
-            lut = np.zeros(labels.max() + 1, np.int32)
-            lut[keep] = np.arange(1, len(keep) + 1)
-            labels = lut[labels]
+        return keep_centered(labels, mask)
+
+
+def keep_centered(labels: np.ndarray, mask: np.ndarray) -> np.ndarray:
+    """The objects whose (rounded) centroid is in the working area, renumbered 1..n."""
+    rows, cols = np.nonzero(labels)
+    if not len(rows):
         return labels
+    ids_px = labels[rows, cols]
+    area = np.bincount(ids_px)
+    ids = np.flatnonzero(area[1:]) + 1
+    # integer coordinate sums are exact in float64, so this equals ndimage.center_of_mass
+    cy = (np.bincount(ids_px, weights=rows)[ids] / area[ids]).round().astype(int)
+    cx = (np.bincount(ids_px, weights=cols)[ids] / area[ids]).round().astype(int)
+    keep = ids[mask[np.clip(cy, 0, mask.shape[0] - 1), np.clip(cx, 0, mask.shape[1] - 1)]]
+    lut = np.zeros(len(area), np.int32)
+    lut[keep] = np.arange(1, len(keep) + 1)
+    return lut[labels]
 
 
 def make_segmenter(cfg: RunConfig, log=print):
@@ -119,6 +132,74 @@ def make_tracker(cfg: RunConfig):
     if cfg.tracker == "seed":
         return SeedTracker(cfg.min_area)
     raise ValueError(f"unknown tracker {cfg.tracker!r} (footprint or seed)")
+
+
+class ScanFeed:
+    """Scans read ahead in one IO thread and shared by the plate workers.
+
+    Frame ``k`` is taken once per plate (``n_takers`` times) and then dropped, and no frame more than
+    ``ahead`` past the oldest one still in use is handed out, so a fast worker waits for the slow
+    ones and at most ``ahead + 2`` scans are in memory.
+    """
+
+    def __init__(self, paths: list[Path], first: np.ndarray, n_takers: int, ahead: int = 3, on_scan_done=None):
+        self.paths, self.n_takers, self.ahead = paths, n_takers, ahead
+        self.on_scan_done = on_scan_done or (lambda: None)
+        self.io = ThreadPoolExecutor(1)
+        self.cond = threading.Condition()
+        self.failed = False
+        self.futures: dict[int, Future] = {0: Future()}
+        self.futures[0].set_result(first)
+        self.taken = collections.Counter()
+        self.oldest = 0  # the first frame some plate hasn't taken yet
+        self.next = 1  # the next frame to read
+        self._prefetch()
+
+    def _prefetch(self) -> None:
+        while self.next < len(self.paths) and self.next <= self.oldest + self.ahead + 1:
+            # np.array, not np.asarray: a memory-mapped scan is only read from disk when copied,
+            # and that must happen here in the IO thread
+            self.futures[self.next] = self.io.submit(lambda j=self.next: np.array(read_scan(self.paths[j])))
+            self.next += 1
+
+    def get(self, k: int) -> np.ndarray:
+        with self.cond:
+            self.cond.wait_for(lambda: self.failed or k <= self.oldest + self.ahead)
+            if self.failed:
+                raise RuntimeError("stopped: another plate worker failed")
+            future = self.futures[k]
+        image = future.result()
+        with self.cond:
+            self.taken[k] += 1
+            while self.taken[self.oldest] == self.n_takers:
+                del self.futures[self.oldest], self.taken[self.oldest]
+                self.oldest += 1
+                self.on_scan_done()
+            self._prefetch()
+            self.cond.notify_all()
+        return image
+
+    def fail(self) -> None:
+        with self.cond:
+            self.failed = True
+            self.cond.notify_all()
+
+    def close(self) -> None:
+        self.io.shutdown(cancel_futures=True)
+
+
+@contextlib.contextmanager
+def opencv_threads(n: int):
+    """OpenCV's own thread count for the block: with several plate workers, every OpenCV call
+    starting a thread per core oversubscribes the CPU."""
+    import cv2
+
+    before = cv2.getNumThreads()
+    cv2.setNumThreads(n)
+    try:
+        yield
+    finally:
+        cv2.setNumThreads(before)
 
 
 def process_scanner(scanner: Scanner, store: ResultsStore, cfg: RunConfig, log=print) -> list[Path]:
@@ -157,32 +238,50 @@ def process_scanner(scanner: Scanner, store: ResultsStore, cfg: RunConfig, log=p
     shifts = {p.number: [] for p in plates}
     history = {p.number: collections.deque(maxlen=PREVIOUS_GAP + 1) for p in plates}
 
-    io = ThreadPoolExecutor(1)
-    pending = io.submit(lambda: np.asarray(background_scan))
     bar = tqdm(total=n, desc=f"{scanner.name} ({len(plates)} plates)", unit="scan", dynamic_ncols=True)
-    for k in range(n):
-        image = pending.result()
-        if k + 1 < n:  # prefetch the next scan while this one is processed
-            pending = io.submit(lambda j=k + 1: np.asarray(read_scan(scanner.scans[j])))
-        for p in plates:
-            im, shift = plate_crop(image, k, p)
-            shifts[p.number].append(shift)
-            hist = history[p.number]
-            hist.append(im)
-            labels = seg.segment(p.number, im, backgrounds[p.number], hist[0], masks[p.number])
-            labels_out[p.number][k] = labels.astype(np.uint16)
-            own = trackers[p.number].update(labels, int(labels.max()))
-            if p.number in colonies_out:
-                colonies_out[p.number][k] = own.astype(np.uint16)
-        bar.update()
+    feed = ScanFeed(scanner.scans, np.array(background_scan), len(plates), on_scan_done=bar.update)
+    writer = ThreadPoolExecutor(2)  # zarr compression and writes, off the workers' path
+    writes = []
+
+    def process_plate(k, p):
+        im, shift = plate_crop(feed.get(k), k, p)
+        shifts[p.number].append(shift)
+        hist = history[p.number]
+        hist.append(im)
+        labels = seg.segment(p.number, im, backgrounds[p.number], hist[0], masks[p.number])
+        writes.append(writer.submit(labels_out[p.number].__setitem__, k, labels.astype(np.uint16)))
+        own = trackers[p.number].update(labels, int(labels.max()))
+        if p.number in colonies_out:
+            writes.append(writer.submit(colonies_out[p.number].__setitem__, k, own.astype(np.uint16)))
+
+    def run_worker(my_plates):
+        try:
+            for k in range(n):
+                for p in my_plates:
+                    process_plate(k, p)
+        except BaseException:
+            feed.fail()  # don't leave the other workers waiting for this one
+            raise
+
+    # Plates are independent, so they run in parallel threads (numpy, OpenCV, scipy and torch
+    # release the GIL; the detectors serialize their GPU calls). Each worker moves through the
+    # frames on its own, so one plate's CPU work overlaps another's GPU pass. A plate's frames
+    # always run in order, so the results don't depend on the number of workers.
+    groups = [plates[i :: max(cfg.workers, 1)] for i in range(min(max(cfg.workers, 1), len(plates)))]
+    with opencv_threads(max(1, (os.cpu_count() or 1) // len(groups))), ThreadPoolExecutor(len(groups)) as pool:
+        for job in [pool.submit(run_worker, g) for g in groups]:
+            job.result()
+    for w in writes:
+        w.result()
+    writer.shutdown()
+    feed.close()
     bar.close()
     log(f"{scanner.name}: segmented in {(time.time() - t0) / 60:.1f} min")
 
-    dirs = []
-    for p in plates:
-        dirs.append(write_plate(store, out[p.number], scanner, p, cfg, seg, masks[p.number], shifts[p.number],
-                                trackers[p.number], labels_out[p.number], colonies_out.get(p.number)))
-    return dirs
+    with ThreadPoolExecutor(max(1, len(groups))) as pool:  # each plate's tables and flags on its own
+        return list(pool.map(lambda p: write_plate(store, out[p.number], scanner, p, cfg, seg, masks[p.number],
+                                                   shifts[p.number], trackers[p.number], labels_out[p.number],
+                                                   colonies_out.get(p.number)), plates))
 
 
 def write_plate(store, out, scanner: Scanner, plate: Plate, cfg: RunConfig, seg, mask, shifts,

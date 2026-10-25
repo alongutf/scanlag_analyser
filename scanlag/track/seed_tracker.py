@@ -42,13 +42,16 @@ def matlab_round(x: np.ndarray) -> np.ndarray:
 
 
 def blob_properties(labels: np.ndarray, n: int) -> tuple[np.ndarray, np.ndarray]:
-    """Area and 1-based (x, y) centroid per label 1..n (regionprops 'basic')."""
-    idx = np.arange(1, n + 1)
-    area = ndi.sum_labels(np.ones_like(labels), labels, idx).astype(np.int64)
-    rows, cols = np.indices(labels.shape)
-    cy = ndi.mean(rows, labels, idx) + 1
-    cx = ndi.mean(cols, labels, idx) + 1
-    return area, np.column_stack([cx, cy]).reshape(n, 2)
+    """Area and 1-based (x, y) centroid per label 1..n (regionprops 'basic'); NaN centroid for
+    absent labels. Integer coordinate sums are exact in float64, so this equals ndimage.mean."""
+    rows, cols = np.nonzero(labels)
+    ids = labels[rows, cols]
+    area = np.bincount(ids, minlength=n + 1)[1 : n + 1]
+    sx = np.bincount(ids, weights=cols, minlength=n + 1)[1 : n + 1]
+    sy = np.bincount(ids, weights=rows, minlength=n + 1)[1 : n + 1]
+    with np.errstate(invalid="ignore"):
+        centroid = np.column_stack([sx / area + 1, sy / area + 1])
+    return area.astype(np.int64), centroid.reshape(n, 2)
 
 
 class SeedTracker:

@@ -6,6 +6,8 @@ Kept bit-compatible so legacy results can be regenerated and used as reference l
 
 from __future__ import annotations
 
+import functools
+
 import numpy as np
 from scipy import ndimage as ndi
 
@@ -15,14 +17,33 @@ DEFAULT_THRESHOLD = 0.2
 EIGHT_CONNECTED = np.ones((3, 3), dtype=bool)
 
 
+@functools.cache
+def _gray_table() -> np.ndarray:
+    """rgb2gray of every uint8 colour, indexed by r << 16 | g << 8 | b (16 MB)."""
+    w = [np.arange(256) * c for c in RGB2GRAY]
+    table = np.empty((256, 256, 256), np.uint8)
+    for r in range(256):
+        table[r] = np.floor(w[0][r] + w[1][:, None] + w[2][None, :] + 0.5)
+    return table.ravel()
+
+
 def rgb2gray_uint8(rgb: np.ndarray) -> np.ndarray:
-    gray = rgb[..., :3].astype(np.float64) @ RGB2GRAY
-    return np.floor(gray + 0.5).astype(np.uint8)  # MATLAB rounds half away from zero
+    rgb = np.asarray(rgb)
+    if rgb.dtype != np.uint8:
+        gray = rgb[..., :3].astype(np.float64) @ RGB2GRAY
+        return np.floor(gray + 0.5).astype(np.uint8)  # MATLAB rounds half away from zero
+    # uint8: the same values by table lookup, faster than the float64 product
+    index = (rgb[..., 0].astype(np.int32) << 16) | (rgb[..., 1].astype(np.int32) << 8) | rgb[..., 2]
+    return _gray_table()[index]
 
 
 def subtract_background(image: np.ndarray, background: np.ndarray) -> np.ndarray:
     """gray(image - background) with uint8 saturation, as cleanImage.m."""
-    diff = np.clip(image[..., :3].astype(np.int16) - background[..., :3], 0, 255).astype(np.uint8)
+    image, background = image[..., :3], background[..., :3]
+    if image.dtype == background.dtype == np.uint8:
+        diff = np.maximum(image, background) - background  # saturating subtraction
+    else:
+        diff = np.clip(image.astype(np.int16) - background, 0, 255).astype(np.uint8)
     return rgb2gray_uint8(diff)
 
 

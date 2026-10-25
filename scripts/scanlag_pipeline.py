@@ -57,6 +57,7 @@ def main() -> None:
     parser.add_argument("--mask-fraction", type=float, default=0.8)
     parser.add_argument("--threshold", type=float, default=0.2)
     parser.add_argument("--tracker", choices=["footprint", "seed"], default="footprint")
+    parser.add_argument("--workers", type=int, default=6, help="plates processed in parallel (1 = serial)")
     parser.add_argument("--redo", action="store_true")
     parser.add_argument("--review-only", action="store_true")
     parser.add_argument("--no-review", action="store_true")
@@ -70,7 +71,7 @@ def main() -> None:
     store = ResultsStore(args.out or default_results_dir(raw), [raw])
     print(f"results: {store.root}")
     cfg = RunConfig(detector=args.detector, n_plates=args.plates, mask_fraction=args.mask_fraction,
-                    threshold=args.threshold, tracker=args.tracker)
+                    threshold=args.threshold, tracker=args.tracker, workers=args.workers)
 
     if not args.review_only and not args.reflag and not args.retrack:
         scanners = find_scanners(raw)
