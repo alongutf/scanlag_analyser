@@ -50,10 +50,12 @@ class CellposeDetector:
 
     def model(self):
         if self._model is None:
-            import torch
             from cellpose import models
 
-            self._model = models.CellposeModel(gpu=torch.cuda.is_available(), pretrained_model=self.pretrained_model)
+            from scanlag.device import torch_device
+
+            # Cellpose picks CUDA or the Apple GPU itself when gpu=True
+            self._model = models.CellposeModel(gpu=torch_device().type != "cpu", pretrained_model=self.pretrained_model)
         return self._model
 
     @classmethod

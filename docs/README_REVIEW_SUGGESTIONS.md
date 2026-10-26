@@ -2,9 +2,58 @@
 
 Written by the README sub-agent on 2026-10-22, while it wrote `README.md`. It reviewed the repo for a user
 who did not develop it, and was not allowed to change any code. The file:line references are from that day,
-so later edits may have moved them. None of these suggestions has been applied yet.
+so later edits may have moved them.
 
-When it ran, the test suite passed (37 tests).
+## Status on 2026-10-26
+
+Re-checked by the README agent on 2026-10-26 (see also `docs/READABILITY_REVIEW_SUGGESTIONS.md`).
+Nothing in this list is fully resolved. Two items have moved a little:
+
+| Item | Status | Note |
+|---|---|---|
+| 3 (`--help` of `scanlag_pipeline.py`) | **partly done** | The new options (`--overwrite`, `--prefix`, `--scanner`, `--max-colonies`, `--workers`) have `help=`. The older ones (`--detector`, `--plates`, `--mask-fraction`, `--threshold`, `--redo`, `--review-only`, `--no-review`, `--reflag`, `--retrack`) still have none, and `--detector` is still not validated (`scripts/scanlag_pipeline.py:83-99`). |
+| 4 (`--redo` deletes review decisions without asking) | **partly done** | A y/n question now appears when the results folder is not empty (`scripts/scanlag_pipeline.py:106-108`). It is generic: it does not say that `--redo` deletes review decisions, it also appears when nothing will be deleted, and `--overwrite` skips it. The delete itself is now at line 144-145. |
+| 1, 2, 5-29 | open | Line numbers have moved in `run.py` (e.g. item 29's `PREVIOUS_GAP` import is now `run.py:41`, and it is also used by the new `last_frame_counts`), `unet.py` (item 2 is now lines 98-99), `review.py` (item 6 is now `PlateData._read`, line 127-130; item 20 is line 43) and `scanlag_pipeline.py` (item 19 is line 150). |
+
+Test-suite count on 2026-10-26: 56 passed (README updated).
+
+## Status after batch 1 (2026-10-26)
+
+Checked against the working tree after "batch 1" (uncommitted). The README describes the new behaviour.
+
+| Item | Status | What the code does now |
+|---|---|---|
+| 1 dependencies | **done** | `pyproject.toml`: `dl` adds `segmentation-models-pytorch>=0.5` and `fastremap`, a new `cellpose = ["cellpose>=4"]` extra, and `pydantic` / `pyyaml` are removed. |
+| 2 `normalize` from the training module | open | `scanlag/detect/unet.py:98-99` still imports `normalize` from `scanlag.train.cellpose_finetune` and `model_channels` from `scanlag.train.dataset`. |
+| 3 `--help`, `--detector` validation | **done** | Every option of `scanlag_pipeline.py` has `help=`, with defaults shown. An unknown `--detector` exits with `unknown detector ...` (`scanlag.pipeline.run.model_dir`). |
+| 4 `--redo` deletes without asking | **done** (no backup) | `confirm_redo` asks before deleting complete results and counts the plates with a `review.json`. `--overwrite` skips the question. No backup is made. Interrupted folders are removed with a printed message. |
+| 5 training `--name` | **done** | `--name` is required in `train_unet.py` and `train_cellpose.py`; an existing `models/<name>` is refused unless `--force` is given. |
+| 6 absolute `raw_dir` | open | |
+| 7 standalone review command | open | `--export-only` was added, but review still goes through `scanlag_pipeline.py <scans> --review-only`. |
+| 8 LICENSE, model in plain git | open | |
+| 9 `models/` registered as a results folder | open | Training still writes through `ResultsStore(PROJECT_ROOT / "models", raw_dirs)`. |
+| 10 training docstrings and help texts | **done** | `train_unet.py` docstring fixed; help strings added to the training scripts, `build_testset`, `select_tiles`, `evaluate_goldset`, `track_with_model`, `plot_area_tracks`, `compare_with_matlab`, `annotate_tiles`, `evaluate_plates` and `scanlag_analysis.py --growth`. |
+| 11 `--condition` duplicate check | **done** | Both paths go through `conditions.expand_layout`. |
+| 12 two growth-time definitions | open | |
+| 13 `summary.csv` plate as text | open | |
+| 14 `plates.py` docstring | **done** | |
+| 15 hard-coded constants | open | The plate error message now at least names the 90 mm / 300 dpi assumption. |
+| 16 `ColonyStatus` location | open | |
+| 17 time zero | **done** (print only) | The scanner list prints `time zero from first scan` or the log name (`Scanner.time_zero`). Parent folders are still not searched. |
+| 18 plate-count error | **done** | It now hints at `--plates`, the plate diameter and the dpi. |
+| 19 detector in `scanner.json` | **done** | New `model` key (resolved model folder, `null` for classical). |
+| 20 `matplotlib.use` on import | open | `scanlag/gui/review.py:43`. |
+| 21 `main.py` | **done** | Deleted (staged). |
+| 22 `docs/PLAN.md:4` status | **done** | |
+| 23 `tiles.py` docstring `.tif` | **done** | |
+| 24 condition folder clash | **done** | `check_folder_names` in `scanlag_analysis.py` stops with an error. |
+| 25 `_HHMMSS` scan names | open | |
+| 26 shortcuts dialog, undo | open | |
+| 27 hard-coded D: path in the test | **done** | `SCANLAG_LEGACY_DATA`, with the D: path as default. |
+| 28 log file | open | |
+| 29 `PREVIOUS_GAP` | **done** (differently) | Moved to the new `scanlag/detect/channels.py` (still importable from `scanlag.testset.tiles`). `model_channels` stays in `scanlag/train/dataset.py`, so the two are not next to each other. |
+
+When it ran (2026-10-22), the test suite passed (37 tests).
 
 What it did not check:
 - It did not launch the review GUI. The GUI section of the README comes from reading `review.py`.

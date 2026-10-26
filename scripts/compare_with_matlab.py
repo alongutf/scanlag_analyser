@@ -124,7 +124,7 @@ def scatter(ax, x, y, label: str) -> None:
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument("results", type=Path)
+    parser.add_argument("results", type=Path, help="results folder written by scanlag_pipeline.py")
     parser.add_argument("roi", type=Path, help="MATLAB ROI folder (holds sep_<n>_<plate>)")
     parser.add_argument("--scanner", help="pipeline scanner name (default: the only one)")
     parser.add_argument("--matlab-scanner", default="1", help="the <n> in MATLAB's sep_<n>_<plate> (default 1)")

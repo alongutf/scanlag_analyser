@@ -2,10 +2,11 @@
 __pycache__/
 *.egg-info/
 .pytest_cache/
-results_*/
+results/
 testset_matlab/
 build_testset.log
 models/cpsam_scanlag_v1/
 models/unet_scanlag_v2/
 models_*.log
 testset_vapc/
+docs/

@@ -13,7 +13,7 @@
     <option name="ADD_CONTENT_ROOTS" value="true" />
     <option name="ADD_SOURCE_ROOTS" value="true" />
     <option name="SCRIPT_NAME" value="$PROJECT_DIR$/scripts/scanlag_analysis.py" />
-    <option name="PARAMETERS" value="$Prompt:Results folder (e.g. results_EPEC260224), then any options (e.g. --growth both)$" />
+    <option name="PARAMETERS" value="$Prompt:Experiment name in ~/results or results folder (e.g. EPEC260224), then any options (e.g. --growth both)$" />
     <option name="SHOW_COMMAND_LINE" value="false" />
     <option name="EMULATE_TERMINAL" value="false" />
     <option name="MODULE_MODE" value="false" />

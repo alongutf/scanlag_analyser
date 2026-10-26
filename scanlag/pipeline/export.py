@@ -7,17 +7,14 @@ Per plate (``<results>/<scanner>/plate_<k>/``):
   share of the blob, with the seed tracker the whole blob's), included
 * ``colonies.csv``: one row per colony: status (0 included, 1 near border, 2 excluded by the
   reviewer, 3 zero final area), appearance time, time from LB to UB px (MATLAB
-  getAppearanceGrowth, NaN if the colony merged before reaching UB, see ``merged_growth``), final
-  area, flags
-
-``merged_growth``: "exclude" (default, as MATLAB) ignores the frames where a colony is merged, so a
-colony that merges before reaching UB has no growth time. "split" uses its share of the merged
-blob instead; it needs plates tracked by the footprint tracker (seed-tracked plates fall back to
-"exclude", with a warning).
+  getAppearanceGrowth, NaN if the colony merged before reaching UB), final area, flags
 * ``area_matrix.csv``: time x colony area table of the included colonies (MATLAB's ``Area``)
 
 Experiment level (``<results>/``): ``all_colonies.csv``, ``all_tracks.csv`` (with scanner and plate
 columns) and ``summary.csv`` (colony counts per plate).
+
+``export`` always computes the growth time with ``merged_growth="exclude"`` (as MATLAB); see
+``plate_tables`` for the "split" alternative.
 """
 
 from __future__ import annotations
@@ -57,6 +54,13 @@ def first_time(tracks: pd.DataFrame, area: float, own_only: bool) -> pd.Series:
 
 
 def plate_tables(plate_dir: Path, merged_growth: str = "exclude") -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
+    """(colonies, tracks, area matrix) tables of one processed plate, as written by ``export``.
+
+    ``merged_growth``: "exclude" (default, as MATLAB) ignores the frames where a colony is merged, so
+    a colony that merges before reaching UB has no growth time. "split" uses its share of the merged
+    blob instead; it needs plates tracked by the footprint tracker (seed-tracked plates fall back to
+    "exclude", with a warning).
+    """
     info = json.loads((plate_dir / "plate.json").read_text())
     use_merged = use_merged_frames(info, merged_growth)
     colonies = pd.read_parquet(plate_dir / "colonies.parquet")
@@ -101,11 +105,13 @@ def plate_tables(plate_dir: Path, merged_growth: str = "exclude") -> tuple[pd.Da
     return colonies, tracks, matrix
 
 
-def export(results: Path, store: ResultsStore, log=print) -> None:
+def export(results: Path, store: ResultsStore, log=print, plate_dirs: list[Path] | None = None) -> None:
+    """Write the tables of ``plate_dirs`` (default: every processed plate under ``results``), see the
+    module docstring. The experiment-level tables then hold only those plates."""
     from scanlag.pipeline.run import load_plate_dirs
 
     all_col, all_tr, summary = [], [], []
-    for plate_dir in load_plate_dirs(results):
+    for plate_dir in load_plate_dirs(results) if plate_dirs is None else plate_dirs:
         colonies, tracks, matrix = plate_tables(plate_dir)
         rel = plate_dir.relative_to(store.root).parts
         store.write_table(colonies, *rel, "colonies.csv")
@@ -126,3 +132,6 @@ def export(results: Path, store: ResultsStore, log=print) -> None:
     store.write_table(pd.concat(all_tr, ignore_index=True), "all_tracks.csv")
     store.write_table(pd.DataFrame(summary), "summary.csv")
     log(f"exported {len(summary)} plates to {store.root}")
+    if unreviewed := [f"{s['scanner']}/{s['plate']}" for s in summary if not s["reviewed"]]:
+        log(f"{len(unreviewed)} of them were never opened in the review window (automatic statuses): "
+            + ", ".join(unreviewed))

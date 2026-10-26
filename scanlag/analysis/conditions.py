@@ -18,8 +18,9 @@ Per colony (included colonies only):
   1-12), up to the frame before it first merges (see ``merged_growth``)
   (also ``radial_growth_um_per_h``: the same slope as the radius of a disc, sqrt(area / pi), in um)
 * ``doubling_time_min`` (and ``_h``): time from the first frame >= lb px to the first frame >= ub px (default 20 and
-  80: the radius doubles; MATLAB getAppearanceGrowth); NaN if the colony merged first
-  or passed both thresholds between two scans
+  80: the radius doubles; MATLAB getAppearanceGrowth); NaN if the colony merged before reaching ub
+  (unless ``merged_growth`` is "split"), never reached ub, or passed both thresholds between two scans
+  (a time <= 0 is blanked)
 
 ``merged_growth`` (FitConfig): "exclude" (default) stops both growth metrics at the colony's first
 merge, as MATLAB. "split" also uses the merged frames, where the footprint tracker gives each
@@ -77,7 +78,12 @@ def read_layout(path: Path) -> pd.DataFrame:
     missing = {"condition", "scanner", "plates"} - set(table.columns)
     if missing:
         raise ValueError(f"{path} needs the columns condition, scanner, plates (missing {sorted(missing)})")
-    table = table.dropna(subset=["condition"])
+    return expand_layout(table.dropna(subset=["condition"]))
+
+
+def expand_layout(table: pd.DataFrame) -> pd.DataFrame:
+    """Rows of (condition, scanner, plates) -> one row per (condition, scanner, plate). Raises
+    ValueError if a plate is in more than one condition."""
     rows = [{"condition": r.condition.strip(), "scanner": r.scanner.strip(), "plate": p}
             for r in table.itertuples() for p in parse_plates(r.plates)]
     layout = pd.DataFrame(rows, columns=["condition", "scanner", "plate"])
@@ -150,6 +156,8 @@ class ConditionData:
 
 
 def collect(results: Path, layout: pd.DataFrame, cfg: FitConfig = FitConfig()) -> ConditionData:
+    """The included colonies and their tracks of every layout plate, with growth metrics and a
+    condition column; layout plates without results are listed in ``missing``."""
     colonies, tracks, missing = [], [], []
     for r in layout.itertuples():
         plate_dir = results / r.scanner / f"plate_{r.plate}"
@@ -202,6 +210,7 @@ def area_matrix(tracks: pd.DataFrame) -> pd.DataFrame:
 
 
 def summary(colonies: pd.DataFrame, conditions: list[str]) -> pd.DataFrame:
+    """One row per condition: plate and colony counts, and mean/median/std of each metric."""
     rows = []
     for c in conditions:
         d = colonies[colonies.condition == c]

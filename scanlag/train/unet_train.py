@@ -18,6 +18,7 @@ import torch
 import torch.nn.functional as F
 
 from scanlag.detect.unet import build_unet, distance_target
+from scanlag.device import autocast_dtype, torch_device
 from scanlag.train.cellpose_finetune import augment, norm_limits, normalize
 from scanlag.train.dataset import CHANNELS
 
@@ -50,7 +51,7 @@ def train(x, labels, ignore, source, out_dir: Path, cfg: UNetConfig, log=print) 
     rng = np.random.default_rng(cfg.seed)
     limits = norm_limits(x, ignore)
     xn = normalize(x, limits)
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    device = torch_device()
     net = build_unet().to(device).train()
     opt = torch.optim.AdamW(net.parameters(), lr=cfg.lr, weight_decay=cfg.weight_decay)
     sched = torch.optim.lr_scheduler.LambdaLR(
@@ -72,7 +73,7 @@ def train(x, labels, ignore, source, out_dir: Path, cfg: UNetConfig, log=print) 
             ds.append(distance_target(li))
             vs.append(~ii)
         X, FG, D, V = (torch.from_numpy(np.stack(a)).float().to(device) for a in (xs, fgs, ds, vs))
-        with torch.autocast(device_type=device.type, dtype=torch.bfloat16):
+        with torch.autocast(device_type=device.type, dtype=autocast_dtype(device)):
             y = net(X)
         loss = unet_loss(y.float(), FG, D, V, cfg.dist_weight)
         opt.zero_grad(set_to_none=True)

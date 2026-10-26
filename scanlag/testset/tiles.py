@@ -7,9 +7,9 @@ Three categories target the cases where threshold detection is weakest:
 * ``excluded`` - neighbourhoods of colonies the user excluded by hand (debris, writing, ...)
 
 Each tile folder holds the RGB crop from the raw scan at that frame, the background (first)
-scan, an earlier frame, and ``labels_init.tif``: MATLAB's segmentation with kept colonies under
+scan, an earlier frame, and ``labels_init.png``: MATLAB's segmentation with kept colonies under
 their MATLAB ID and every other blob (merged, excluded, rejected) under its own ID >= 10000.
-The annotator edits that into ``labels_corrected.tif``.
+The annotator edits that into ``labels_corrected.png``.
 """
 
 from __future__ import annotations
@@ -25,11 +25,11 @@ from scipy import ndimage as ndi
 from PIL import Image
 
 from scanlag.io.raw import read_window
+from scanlag.detect.channels import PREVIOUS_GAP  # noqa: F401 (also imported from here)
 from scanlag.store import ResultsStore
 from scanlag.testset.build import IGNORE
 
 TILE = 256
-PREVIOUS_GAP = 4  # frames between the "previous" image and the tile frame (1 h at 15 min)
 OTHER_ID_START = 10000
 MIN_MASK_COVERAGE = 0.6
 

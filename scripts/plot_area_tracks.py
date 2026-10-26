@@ -38,10 +38,12 @@ def draw(ax, tracks: pd.DataFrame, ids, colors) -> None:
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--plates", required=True)
-    parser.add_argument("--testset", type=Path, default=PROJECT_ROOT / "testset_matlab")
-    parser.add_argument("--model", default="unet_scanlag_v1")
+    parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    parser.add_argument("--plates", required=True, help="plate-ID prefix, e.g. EPEC260224")
+    parser.add_argument("--testset", type=Path, default=PROJECT_ROOT / "testset_matlab",
+                        help="test set folder (default: testset_matlab in the project)")
+    parser.add_argument("--model", default="unet_scanlag_v1",
+                        help="model name, as in <testset>/model_runs/<model> (default unet_scanlag_v1)")
     args = parser.parse_args()
 
     raw_dirs = json.loads((args.testset / REGISTRY_FILE).read_text())["raw_dirs"]

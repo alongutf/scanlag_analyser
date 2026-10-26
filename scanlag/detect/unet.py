@@ -30,6 +30,8 @@ import torch.nn.functional as F
 from scipy import ndimage as ndi
 from skimage.segmentation import watershed
 
+from scanlag.device import autocast_dtype, torch_device
+
 PAD = 32  # the encoder downsamples by 32
 
 
@@ -91,7 +93,7 @@ class UNetDetector:
         if self._net is None:
             net = build_unet(encoder_weights=None)
             net.load_state_dict(torch.load(self.model_dir / "model.pt", map_location="cpu", weights_only=True))
-            self._net = net.to("cuda" if torch.cuda.is_available() else "cpu").eval()
+            self._net = net.to(torch_device()).eval()
         return self._net
 
     def prepare(self, image: np.ndarray, background: np.ndarray, previous: np.ndarray) -> np.ndarray:
@@ -108,7 +110,7 @@ class UNetDetector:
         page-locked memory before it, and the result is awaited after it, so other threads can
         prepare their input and queue their own pass meanwhile.
         """
-        cuda = torch.cuda.is_available()
+        cuda = torch_device().type == "cuda"  # page-locked memory and events are CUDA only
         t = torch.from_numpy(np.ascontiguousarray(x.transpose(2, 0, 1), np.float32)[None])
         if cuda:
             t = t.pin_memory()
@@ -132,8 +134,10 @@ class UNetDetector:
         H, W = round(h * s), round(w * s)
         t = F.interpolate(t, size=(H, W), mode="bilinear", align_corners=False)
         t = F.pad(t, (0, -W % PAD, 0, -H % PAD), mode="reflect")
-        with torch.autocast(device_type=t.device.type, dtype=torch.bfloat16):
+        with torch.autocast(device_type=t.device.type, dtype=autocast_dtype(t.device)):
             y = net(t)[..., :H, :W].float()
+        if y.device.type == "mps" and (H % h or W % w):
+            y = y.cpu()  # the Apple GPU's area resampling only takes whole-number factors
         y = F.interpolate(y, size=(h, w), mode="area")[0]
         return torch.stack([torch.sigmoid(y[0]), torch.sigmoid(y[1])])
 

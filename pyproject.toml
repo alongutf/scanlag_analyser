@@ -15,15 +15,14 @@ dependencies = [
     "pyarrow",
     "pillow",
     "matplotlib",
-    "pydantic",
-    "pyyaml",
     "tqdm",
     "plotly",
 ]
 
 [project.optional-dependencies]
 gui = ["napari[pyqt5]"]
-dl = ["torch", "torchvision"]
+dl = ["torch", "torchvision", "segmentation-models-pytorch>=0.5", "fastremap"]
+cellpose = ["cellpose>=4"]
 dev = ["pytest"]
 
 [build-system]

@@ -101,6 +101,28 @@ def test_find_scanners_groups_and_names(tmp_path):
     scanners = {s.name: s for s in find_scanners(tmp_path)}
     assert set(scanners) == {"1-3", "1-1.2"}
     assert len(scanners["1-3"].scans) == 2 and scanners["1-3"].times_min == [0.0, 120.0]
+    assert scanners["1-3"].time_zero == "first scan"  # the log starts after the first scan
+    (tmp_path / "T2" / "run_vapc_scan20250806_1726.log").write_text("2025/08/06 17:16:00 - Starting.\n")
+    scanners = {s.name: s for s in find_scanners(tmp_path)}
+    assert scanners["1-3"].time_zero == "run_vapc_scan20250806_1726.log" and scanners["1-3"].times_min == [10.0, 130.0]
+
+
+def test_select_scanners(tmp_path):
+    import pytest
+
+    from scanlag.pipeline.scans import find_scanners, select_scanners
+
+    for name in ("epec-amp7_1-4.1u_20260224_2025.tiff", "epec-ctrl_1-5.1u_20260224_2025.tiff", "_1-6.1u_20260224_2025.tiff"):
+        (tmp_path / name).write_bytes(b"")
+    scanners = find_scanners(tmp_path)
+    names = lambda chosen: sorted(s.name for s in chosen)
+    assert names(select_scanners(scanners)) == ["1-4.1u", "1-5.1u", "1-6.1u"]
+    assert names(select_scanners(scanners, prefixes=["EPEC-amp"])) == ["1-4.1u"]
+    assert names(select_scanners(scanners, prefixes=["epec"])) == ["1-4.1u", "1-5.1u"]
+    assert names(select_scanners(scanners, names=["1-6.1u", "1-5.1u"])) == ["1-5.1u", "1-6.1u"]
+    assert names(select_scanners(scanners, prefixes=["epec"], names=["1-6.1u", "1-5.1u"])) == ["1-5.1u"]
+    with pytest.raises(ValueError, match="no scanner matches"):
+        select_scanners(scanners, names=["9-9"])
 
 
 def test_retrack_plate(tmp_path):

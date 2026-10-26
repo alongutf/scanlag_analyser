@@ -41,9 +41,10 @@ def matlab_blobs(labels: np.ndarray) -> np.ndarray:
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--testset", type=Path, required=True)
-    parser.add_argument("--models", type=Path, nargs="+", default=DEFAULT_MODELS)
+    parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    parser.add_argument("--testset", type=Path, required=True, help="test set folder (scripts/build_testset.py)")
+    parser.add_argument("--models", type=Path, nargs="+", default=DEFAULT_MODELS,
+                        help="trained model folders to evaluate (default: models/cpsam_scanlag_v1 models/unet_scanlag_v1)")
     parser.add_argument("--unet-cores", type=float, nargs="+", default=[0.7],
                         help="U-Net watershed core thresholds to compare (one detector each; higher splits less)")
     args = parser.parse_args()

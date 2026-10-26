@@ -31,18 +31,17 @@ import numpy as np
 import pandas as pd
 from tqdm import tqdm
 
+from scanlag.detect.channels import PREVIOUS_GAP
 from scanlag.detect.classical import DEFAULT_THRESHOLD, binarize, label_column_major, stretch_limits, subtract_background
 from scanlag.io.matlab_import import ColonyStatus
 from scanlag.io.raw import read_scan
 from scanlag.pipeline.flags import colony_flags
 from scanlag.pipeline.plates import Aligner, Plate, circle_mask, crop, find_plates, is_empty_slot
 from scanlag.pipeline.scans import Scanner
-from scanlag.store import ResultsStore
-from scanlag.testset.tiles import PREVIOUS_GAP
+from scanlag.store import PROJECT_ROOT, ResultsStore
 from scanlag.track.seed_tracker import MIN_AREA, SeedTracker, border_status
 from scanlag.track.tracker import FootprintTracker
 
-PROJECT_ROOT = Path(__file__).resolve().parents[2]
 MODELS = {
     "unet": PROJECT_ROOT / "models" / "unet_scanlag_v1",
     "cellpose": PROJECT_ROOT / "models" / "cpsam_scanlag_v1",
@@ -120,13 +119,27 @@ def keep_centered(labels: np.ndarray, mask: np.ndarray) -> np.ndarray:
     return lut[labels]
 
 
+def model_dir(detector: str) -> Path | None:
+    """The model folder of a detector: an alias (unet, cellpose) or a folder; None for classical.
+    Raises ValueError if it is not a trained model folder (one with a config.json)."""
+    if detector == "classical":
+        return None
+    folder = MODELS.get(detector, Path(detector)).resolve()
+    if not (folder / "config.json").is_file():
+        raise ValueError(f"unknown detector {detector!r}: use unet, cellpose, classical or a trained model folder "
+                         f"(one with a config.json)")
+    return folder
+
+
 def make_segmenter(cfg: RunConfig, log=print):
+    """The segmenter for ``cfg.detector``: ClassicalSegmenter or ModelSegmenter."""
     if cfg.detector == "classical":
         return ClassicalSegmenter(cfg.threshold, cfg.min_upper_limit, log)
-    return ModelSegmenter(MODELS.get(cfg.detector, Path(cfg.detector)))
+    return ModelSegmenter(model_dir(cfg.detector))
 
 
 def make_tracker(cfg: RunConfig):
+    """A new tracker for ``cfg.tracker``: FootprintTracker or SeedTracker."""
     if cfg.tracker == "footprint":
         return FootprintTracker(cfg.min_area)
     if cfg.tracker == "seed":
@@ -202,31 +215,75 @@ def opencv_threads(n: int):
         cv2.setNumThreads(before)
 
 
-def process_scanner(scanner: Scanner, store: ResultsStore, cfg: RunConfig, log=print) -> list[Path]:
+def find_dishes(background_scan: np.ndarray, cfg: RunConfig) -> tuple[list[Plate], list[int]]:
+    """(plates holding a dish, numbers of the empty slots)."""
+    plates = find_plates(background_scan, cfg.n_plates)
+    empty = [p.number for p in plates if is_empty_slot(background_scan, p)]
+    return [p for p in plates if p.number not in empty], empty
+
+
+def plate_crop(image: np.ndarray, k: int, plate: Plate, aligner: Aligner) -> tuple[np.ndarray, tuple[int, int]]:
+    """Frame ``k``'s crop of ``plate``, shifted to follow the plate (frame 0 is the reference)."""
+    dx, dy = (0, 0) if k == 0 else aligner.shift(image)
+    x0, y0, s = plate.crop
+    return crop(image, x0 + dx, y0 + dy, s), (dx, dy)
+
+
+def last_frame_counts(scanner: Scanner, cfg: RunConfig, seg=None, log=print) -> dict[int, int]:
+    """Objects of at least ``cfg.min_area`` px on each plate's last frame: a quick first estimate of
+    how dense the plates are, before the whole time-lapse is processed."""
+    seg = seg or make_segmenter(cfg, log)
+    n = len(scanner.scans)
+    background_scan = read_scan(scanner.scans[0])
+    last = read_scan(scanner.scans[-1])
+    k_prev = max(n - 1 - PREVIOUS_GAP, 0)
+    previous = read_scan(scanner.scans[k_prev])
+    counts = {}
+    for p in find_dishes(background_scan, cfg)[0]:
+        aligner = Aligner(background_scan, p, mask_fraction=cfg.mask_fraction)
+        mask = circle_mask(p.crop[2], p, cfg.mask_fraction)
+        background = crop(background_scan, *p.crop)
+        image = plate_crop(last, n - 1, p, aligner)[0]
+        if isinstance(seg, ClassicalSegmenter):
+            seg.set_last_frame(p.number, image, background, mask)
+        labels = seg.segment(p.number, image, background, plate_crop(previous, k_prev, p, aligner)[0], mask)
+        counts[p.number] = int((np.bincount(labels.ravel())[1:] >= cfg.min_area).sum())
+    return counts
+
+
+def process_scanner(scanner: Scanner, store: ResultsStore, cfg: RunConfig, log=print, seg=None,
+                    exclude=()) -> list[Path]:
+    """Segment and track every plate of ``scanner`` and write its tables (see ``write_plate``).
+
+    ``seg``: a segmenter to reuse (default: a new one from ``cfg``); ``exclude``: plate numbers to
+    leave out. Returns the plate folders written (empty if no plate is left).
+    """
     t0 = time.time()
     n = len(scanner.scans)
     background_scan = read_scan(scanner.scans[0])
-    plates = find_plates(background_scan, cfg.n_plates)
-    empty = [p.number for p in plates if is_empty_slot(background_scan, p)]
+    plates, empty = find_dishes(background_scan, cfg)
     if empty:
         log(f"{scanner.name}: plates {empty} are empty slots (no dish), skipped")
-    plates = [p for p in plates if p.number not in empty]
+    exclude = set(exclude)
+    if excluded := sorted(p.number for p in plates if p.number in exclude):
+        log(f"{scanner.name}: plates {excluded} excluded")
+    if unknown := sorted(exclude - {p.number for p in plates} - set(empty)):
+        log(f"{scanner.name}: no plates {unknown} to exclude")
+    plates = [p for p in plates if p.number not in exclude]
+    if not plates:
+        log(f"{scanner.name}: no plates left to process")
+        return []
     aligners = {p.number: Aligner(background_scan, p, mask_fraction=cfg.mask_fraction) for p in plates}
     size = {p.number: p.crop[2] for p in plates}
     masks = {p.number: circle_mask(size[p.number], p, cfg.mask_fraction) for p in plates}
     backgrounds = {p.number: crop(background_scan, *p.crop) for p in plates}
-    seg = make_segmenter(cfg, log)
+    seg = seg or make_segmenter(cfg, log)
     log(f"{scanner.name}: {n} scans, plates at " + ", ".join(f"{p.number}:({p.cx:.0f},{p.cy:.0f})" for p in plates))
-
-    def plate_crop(image, k, plate):
-        dx, dy = (0, 0) if k == 0 else aligners[plate.number].shift(image)
-        x0, y0, s = plate.crop
-        return crop(image, x0 + dx, y0 + dy, s), (dx, dy)
 
     if isinstance(seg, ClassicalSegmenter):
         last = read_scan(scanner.scans[-1])
         for p in plates:
-            seg.set_last_frame(p.number, plate_crop(last, n - 1, p)[0], backgrounds[p.number], masks[p.number])
+            seg.set_last_frame(p.number, plate_crop(last, n - 1, p, aligners[p.number])[0], backgrounds[p.number], masks[p.number])
 
     out = {p.number: (scanner.name, f"plate_{p.number}") for p in plates}
     labels_out = {p.number: store.create_labels((n, size[p.number], size[p.number]), *out[p.number], "labels.zarr") for p in plates}
@@ -244,7 +301,7 @@ def process_scanner(scanner: Scanner, store: ResultsStore, cfg: RunConfig, log=p
     writes = []
 
     def process_plate(k, p):
-        im, shift = plate_crop(feed.get(k), k, p)
+        im, shift = plate_crop(feed.get(k), k, p, aligners[p.number])
         shifts[p.number].append(shift)
         hist = history[p.number]
         hist.append(im)
@@ -286,6 +343,7 @@ def process_scanner(scanner: Scanner, store: ResultsStore, cfg: RunConfig, log=p
 
 def write_plate(store, out, scanner: Scanner, plate: Plate, cfg: RunConfig, seg, mask, shifts,
                 tracker, labels, own=None) -> Path:
+    """Write one plate's plate.json, mask.png, tracks.parquet and colonies.parquet; returns its folder."""
     detector = seg.name
     times = np.asarray(scanner.times_min)
     tracks, colonies = track_tables(tracker, times, mask, labels, own)
@@ -319,7 +377,7 @@ def track_tables(tracker, times: np.ndarray, mask: np.ndarray, labels, own=None)
         merged[k] = (b > 0) & (counts[b] > 1)
 
     t_idx, c_idx = np.nonzero(area)
-    cx, cy = centroid[t_idx, c_idx, 0] - 1, centroid[t_idx, c_idx, 1] - 1
+    cx, cy = centroid[t_idx, c_idx, 0] - 1, centroid[t_idx, c_idx, 1] - 1  # tracker centroids: 1-based (x, y), as MATLAB
     tracks = pd.DataFrame({
         "frame": t_idx, "time_min": times[t_idx], "colony_id": c_idx + 1, "area_px": area[t_idx, c_idx],
         "x": cx, "y": cy, "blob": blob[t_idx, c_idx], "merged": merged[t_idx, c_idx],
@@ -341,7 +399,7 @@ def track_tables(tracker, times: np.ndarray, mask: np.ndarray, labels, own=None)
         "appearance_min": times[appear] if n_col else [],
         "first_merged_frame": np.where(ever_merged, np.argmax(merged, axis=0), -1) if n_col else [],
         "final_area_px": area[-1] if n_col else [],
-        "seed_x": [c for _, c in seeds],
+        "seed_x": [c for _, c in seeds],  # seeds are 0-based (row, col)
         "seed_y": [r for r, _ in seeds],
     })
     colonies = colonies.join(colony_flags(area, merged, blob, labels, own).set_index("colony_id"), on="colony_id")
@@ -412,10 +470,12 @@ def refresh_flags(plate_dir: Path) -> int:
 
 
 def load_plate_dirs(results: Path) -> list[Path]:
+    """The plate folders under ``results`` that have a colonies.parquet, sorted."""
     return sorted(p.parent for p in Path(results).glob("*/plate_*/colonies.parquet"))
 
 
 def plate_info(plate_dir: Path) -> dict:
+    """A plate folder's plate.json."""
     return json.loads((Path(plate_dir) / "plate.json").read_text())
 
 

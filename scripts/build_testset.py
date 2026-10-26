@@ -30,10 +30,11 @@ def _build(plate_dir: Path, data_root: Path, out: Path) -> dict:
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser()
-    parser.add_argument("data_root", type=Path)
-    parser.add_argument("--out", type=Path, default=PROJECT_ROOT / "testset_matlab")
-    parser.add_argument("--workers", type=int, default=6)
+    parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    parser.add_argument("data_root", type=Path, help="folder with the experiments' raw scans and MATLAB ROI folders")
+    parser.add_argument("--out", type=Path, default=PROJECT_ROOT / "testset_matlab",
+                        help="test set folder (default: testset_matlab in the project)")
+    parser.add_argument("--workers", type=int, default=6, help="plates built in parallel processes (default 6)")
     parser.add_argument("--retry-failed", action="store_true", help="only rebuild plates that errored last time")
     args = parser.parse_args()
 

@@ -69,10 +69,13 @@ def evaluate(tiles, preds, iou: float) -> tuple[pd.DataFrame, list[dict]]:
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--testset", type=Path, default=PROJECT_ROOT / "testset_matlab")
-    parser.add_argument("--detectors", nargs="+", default=["matlab_all", "matlab_kept", "cellpose"])
-    parser.add_argument("--iou", type=float, default=0.5)
+    parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    parser.add_argument("--testset", type=Path, default=PROJECT_ROOT / "testset_matlab",
+                        help="test set folder (default: testset_matlab in the project)")
+    parser.add_argument("--detectors", nargs="+", default=["matlab_all", "matlab_kept", "cellpose"],
+                        help="detectors to score, see above (default: matlab_all matlab_kept cellpose)")
+    parser.add_argument("--iou", type=float, default=0.5,
+                        help="IoU for a detection to match a gold colony (default 0.5)")
     args = parser.parse_args()
 
     raw_dirs = json.loads((args.testset / REGISTRY_FILE).read_text())["raw_dirs"]

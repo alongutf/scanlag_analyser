@@ -1,7 +1,8 @@
 # ScanLag Analyser (Python) — Design Plan
 
 Python successor to the MATLAB ScanLag code in `C:\Users\owner\Documents\Code\scan_lag_raya`.
-Status: **plan only, no code yet** (2026-10-21).
+Status: written as the plan on 2026-10-21, before any code. It has been implemented since; the README
+describes the current behaviour, and this file is kept for the design reasons.
 
 ---
 
@@ -101,10 +102,10 @@ tests/
 
 ### 4.1 Output layout
 
-The results directory is a parameter. Its default is `<project root>/results_<data folder name>` (§7).
+The results directory is a parameter. Its default is `~/results/<data folder name>` (§7).
 
 ```
-results_<experiment>/
+~/results/<experiment>/
   experiment.yaml          # frozen copy of the config used
   manifest.json            # every raw file: path, size, mtime, sha256, parsed timestamp
   registration.parquet     # scanner, frame, filename, timestamp, dx, dy
@@ -203,7 +204,7 @@ flag is kept, so the old exclusion rule can still be applied for comparison.
 
 ## 7. Decisions (2026-10-21)
 
-1. **Output location:** separate from raw data, and always a parameter. Default: `<project root>/results_<data folder name>`
+1. **Output location:** separate from raw data, and always a parameter. Default: `~/results/<data folder name>`
    (`scanlag.store.default_results_dir`). A results directory records its raw directories and refuses to be
    reused for another experiment that has the same folder name. Outputs include masks and area-tracking tables.
 2. **GUI:** napari.
@@ -441,7 +442,7 @@ python scripts/scanlag_pipeline.py <scan folder> [--detector unet|cellpose|class
    step through them. Also: zoom/pan, "Labels only" (MATLAB's analysis view), show excluded, flagged only, log
    scale, PageUp/PageDown between plates. Decisions are saved immediately (`colonies.parquet` + `review.json`
    log).
-6. **Export** (`scanlag/pipeline/export.py`, "Finish & export"): `results_<folder>/<scanner>/plate_<k>/`
+6. **Export** (`scanlag/pipeline/export.py`, "Finish & export"): `~/results/<folder>/<scanner>/plate_<k>/`
    `tracks.csv`, `colonies.csv` (status, appearance, 20→80 px growth time, flags), `area_matrix.csv`, plus
    `all_colonies.csv`, `all_tracks.csv` and `summary.csv` at the top level. Working files (`labels.zarr`, parquet,
    `plate.json`, `mask.png`) are kept next to them, so `--review-only` reopens the GUI.

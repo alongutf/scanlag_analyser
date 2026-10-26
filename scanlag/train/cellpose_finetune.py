@@ -26,6 +26,7 @@ import numpy as np
 import torch
 import torch.nn.functional as F
 
+from scanlag.device import autocast_dtype, torch_device
 from scanlag.train.dataset import CHANNELS
 
 BSIZE = 256  # fixed for Cellpose-SAM
@@ -103,7 +104,7 @@ def train(x, labels, ignore, source, out_dir: Path, cfg: TrainConfig, log=print)
     limits = norm_limits(x, ignore)
     xn = normalize(x, limits)
 
-    model = models.CellposeModel(gpu=torch.cuda.is_available(), pretrained_model=cfg.base_model, use_bfloat16=False)
+    model = models.CellposeModel(gpu=torch_device().type != "cpu", pretrained_model=cfg.base_model, use_bfloat16=False)
     net, device = model.net, model.device
     net.train()
     opt = torch.optim.AdamW(net.parameters(), lr=cfg.lr, weight_decay=cfg.weight_decay)
@@ -132,7 +133,7 @@ def train(x, labels, ignore, source, out_dir: Path, cfg: TrainConfig, log=print)
         opt.zero_grad(set_to_none=True)
         for _ in range(cfg.accumulate):
             X, L, V = batch()
-            with torch.autocast(device_type=device.type, dtype=torch.bfloat16):
+            with torch.autocast(device_type=device.type, dtype=autocast_dtype(device)):
                 y = net(X)[0]
             loss = masked_loss(y.float(), L, V) / cfg.accumulate
             loss.backward()

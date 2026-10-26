@@ -18,6 +18,7 @@ import zarr
 from PIL import Image
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
+RESULTS_ROOT = Path.home() / "results"
 REGISTRY_FILE = ".scanlag_results.json"
 LABEL_CHUNK = 512
 
@@ -26,9 +27,9 @@ class RawDataProtectionError(PermissionError):
     pass
 
 
-def default_results_dir(raw_dir: str | Path, root: str | Path = PROJECT_ROOT) -> Path:
-    """``<root>/results_<raw data folder name>``."""
-    return Path(root) / f"results_{Path(raw_dir).name}"
+def default_results_dir(raw_dir: str | Path, root: str | Path = RESULTS_ROOT) -> Path:
+    """``<root>/<raw data folder name>``, with ``root`` defaulting to ``~/results``."""
+    return Path(root) / Path(raw_dir).name
 
 
 def _is_within(path: Path, parent: Path) -> bool:

@@ -43,7 +43,7 @@ The raw scans are **only ever read**. Every output goes to a separate results fo
 ## 1. Workflow at a glance
 
 ```
- raw scan folder (read only)            results_<folder name>/  (inside the project folder by default)
+ raw scan folder (read only)            ~/results/<folder name>/  (by default)
  ───────────────────────────            ──────────────────────────────────────────────────────────────
  <prefix>_<scanner>_<YYYYMMDD>_<HHMM>.tiff
              │
@@ -74,9 +74,15 @@ A typical session (Windows, from the project folder, with the virtual environmen
 python scripts\scanlag_pipeline.py "D:\Experiments\EPEC260224"
 
 :: 3: first run writes a conditions.csv template; fill it in, then run again
-python scripts\scanlag_analysis.py results_EPEC260224
-python scripts\scanlag_analysis.py results_EPEC260224 --growth both
+python scripts\scanlag_analysis.py EPEC260224
+python scripts\scanlag_analysis.py EPEC260224 --growth both
 ```
+
+Step 1 writes its results to `~/results/EPEC260224` (`%USERPROFILE%\results\EPEC260224` on Windows).
+`scanlag_analysis.py` accepts the bare experiment name and looks it up there, unless a folder of that name
+exists in the current directory. If you gave the pipeline `--out`, pass that folder instead. The examples are
+for the Windows Command Prompt (`cmd`); in PowerShell write `"$env:USERPROFILE\results\EPEC260224"` where a
+full path is needed.
 
 ---
 
@@ -86,62 +92,117 @@ python scripts\scanlag_analysis.py results_EPEC260224 --growth both
 
 | Item | Notes |
 |---|---|
-| Python **3.11 or newer** | `pyproject.toml` says `requires-python = ">=3.11"`. The developers use 3.11.5. |
+| Python **3.11 or newer** | `pyproject.toml` says `requires-python = ">=3.11"`. The conda environments use 3.12; the developers' venv uses 3.11.5. |
 | Windows, macOS or Linux | Developed and tested on Windows 11. Paths in the examples are Windows paths. |
-| NVIDIA GPU with CUDA (optional) | Strongly recommended for the U-Net and Cellpose detectors. Everything also runs on the CPU, more slowly. The classical (MATLAB) detector and the analysis need no GPU. |
+| conda | [Miniforge](https://github.com/conda-forge/miniforge) is recommended (conda-forge only, free for any use). An existing Anaconda or Miniconda works too. |
+| NVIDIA GPU with CUDA (optional) | Strongly recommended for the U-Net and Cellpose detectors, and for training. Everything also runs on the CPU, more slowly. The classical (MATLAB) detector and the analysis need no GPU. Macs with Apple silicon (M1 or later) use their own GPU. |
 | Disk space | A few MB to a few tens of MB per plate for results (compressed label stacks). The raw scans are not copied. |
 | Access to the raw scans | Needed for processing **and** for the review window, which reads the images from the original location (see [FAQ](#13-troubleshooting-and-faq)). |
 
-### Install step by step
+### Install with conda (recommended)
+
+Three environment files are in the project folder. All packages come from conda-forge, except the
+project itself, `opencv-python-headless` and Cellpose, which come from pip. conda-forge's Cellpose package
+includes the Cellpose GUI, which would install a second Qt library and a second OpenCV:
+
+| File | What it installs | Use it on |
+|---|---|---|
+| `environment.yml` | the pipeline with the default U-Net detector, the review window, the analysis; PyTorch with CUDA | Windows or Linux with an **NVIDIA GPU** |
+| `environment-cpu.yml` | the same, with the PyTorch build without CUDA (a much smaller download; on Apple silicon it still uses the Mac's GPU) | any machine **without an NVIDIA GPU**: macOS (Apple silicon and Intel), Windows, Linux |
+| `environment-training.yml` | an add-on to either: Cellpose-SAM and pytest | training and evaluating models, the Cellpose detector, running the tests |
+
+Cellpose-SAM is not in the user environment: it is only needed for `--detector cellpose`, whose model is
+not shipped (see [Model weights](#model-weights)), and for training.
+
+In a terminal (on Windows: the "Miniforge Prompt" or "Anaconda Prompt"):
 
 ```bat
 :: 1. get the code (or copy the folder) and go into it
 cd C:\path\to\scanlag_analyser
 
-:: 2. create and activate a virtual environment
+:: 2. create the environment (a few minutes), then activate it.
+::    NVIDIA GPU:
+conda env create -f environment.yml
+::    no NVIDIA GPU (and every Mac):
+conda env create -f environment-cpu.yml
+
+conda activate scanlag
+
+:: 3. (optional) add what training needs
+conda env update -n scanlag -f environment-training.yml
+```
+
+**CUDA version.** With `environment.yml`, conda reads the NVIDIA driver's CUDA version and picks the
+newest PyTorch built for it, so an older driver gets an older PyTorch (any version from 2.6 works). Without
+an NVIDIA driver, `environment.yml` stops with `nothing provides __cuda`: use `environment-cpu.yml`.
+
+**Which processor runs the networks.** The U-Net and Cellpose run on an NVIDIA GPU (CUDA) if there is one,
+else on the GPU of an Apple-silicon Mac (Metal, "MPS"), else on the CPU (`scanlag/device.py`). To choose
+yourself, set the environment variable `SCANLAG_DEVICE` to `cuda`, `mps` or `cpu` before running a script,
+e.g. `SCANLAG_DEVICE=cpu python scripts/scanlag_pipeline.py ...` on macOS/Linux, or
+`set SCANLAG_DEVICE=cpu` first on Windows. On the Apple GPU the networks compute in float16 instead of
+bfloat16, so areas can differ from a CUDA run by a pixel here and there; the U-Net post-processing and the
+tracking run on the CPU on every machine.
+
+The environment installs the project itself in editable mode (`pip install -e .`, the last line of the
+file), so the scripts in `scripts/` can `import scanlag` and code changes take effect without
+reinstalling. Keep the project folder where it was when the environment was created, or run
+`pip install -e .` again from its new place.
+
+To update after pulling a new version: `conda env update -n scanlag -f environment.yml --prune`
+(add `environment-training.yml` again afterwards if you use it). To start over:
+`conda env remove -n scanlag`.
+
+### Alternative: pip and a virtual environment
+
+Without conda, use Python 3.11 or newer and the dependency groups of `pyproject.toml`:
+
+```bat
 py -3.11 -m venv .venv
 .venv\Scripts\activate
 python -m pip install --upgrade pip
 
-:: 3. (GPU only) install the CUDA build of PyTorch first. The developers use torch 2.6.0 + CUDA 12.4:
-pip install torch==2.6.0 torchvision==0.21.0 --index-url https://download.pytorch.org/whl/cu124
+:: (NVIDIA GPU only) the CUDA build of PyTorch first; see pytorch.org for the right index URL
+pip install torch torchvision --index-url https://download.pytorch.org/whl/cu126
 
-:: 4. install the package itself in editable mode, with the optional groups you need
-pip install -e ".[gui,dl,dev]"
-
-:: 5. extra packages the U-Net detector needs that are NOT yet listed in pyproject.toml
-pip install segmentation-models-pytorch fastremap
-
-:: 6. (optional) Cellpose, for the Cellpose detector, Cellpose training and the gold-set tools
-pip install cellpose
+pip install -e ".[gui,dl]"
+:: (optional) training and tests
+pip install -e ".[cellpose,dev]"
 ```
 
-On macOS/Linux, activate with `source .venv/bin/activate` and skip the `--index-url` line if you have no
-NVIDIA GPU (`pip install torch torchvision` gives a CPU or Apple-silicon build).
-
-The `-e` (editable) install matters: the scripts in `scripts/` do `import scanlag`, which only works if the
-package is installed (or if you run them from PyCharm with the project's interpreter, see
-[section 10](#10-running-from-pycharm)).
+On macOS/Linux, activate with `source .venv/bin/activate`. Without the `--index-url` line, pip gives the
+CPU build on Windows, a CUDA build on Linux, and the CPU/Apple build on macOS (Apple silicon only; PyTorch
+publishes no pip wheels for Intel Macs).
 
 ### Optional dependency groups (from `pyproject.toml`)
 
+These are for the pip route; the conda files install the same packages (`environment.yml` = always + `gui`
++ `dl`; `environment-training.yml` adds `cellpose` + `dev`). `tests/test_environment.py` checks that the
+files and `pyproject.toml` list the same packages, and that no file asks conda for a package that brings a
+second Qt library (PySide6) or a second OpenCV: `matplotlib` (use `matplotlib-base`), `cellpose` or
+`segment-anything` (from pip instead).
+
 | Group | Installs | Needed for |
 |---|---|---|
-| *(always)* | numpy, scipy, scikit-image, opencv-python-headless, tifffile, imagecodecs, zarr>=3, pandas, pyarrow, pillow, matplotlib, pydantic, pyyaml, tqdm, plotly | the classical detector, tracking, export, analysis, histograms |
+| *(always)* | numpy, scipy, scikit-image, opencv-python-headless, tifffile, imagecodecs, zarr>=3, pandas, pyarrow, pillow, matplotlib, tqdm, plotly | the classical detector, tracking, export, analysis, histograms |
 | `gui` | `napari[pyqt5]` | the review window (it uses PyQt5, which comes with this) and `annotate_tiles.py` (napari) |
-| `dl` | torch, torchvision | U-Net and Cellpose detectors, training |
+| `dl` | torch, torchvision, segmentation-models-pytorch>=0.5, fastremap | the default **U-Net** detector, the Cellpose detector (with `cellpose`), training |
+| `cellpose` | cellpose>=4 | the Cellpose detector, Cellpose fine-tuning, `evaluate_goldset.py --detectors cellpose` |
 | `dev` | pytest | running the tests |
-| *not listed (install by hand)* | `segmentation-models-pytorch`, `fastremap` | the default **U-Net** detector and U-Net training |
-| *not listed (install by hand)* | `cellpose` (version 4 or newer) | the Cellpose detector, Cellpose fine-tuning, `evaluate_goldset.py --detectors cellpose`; it also brings `fastremap` |
 
-The developers' environment has: torch 2.6.0+cu124, segmentation_models_pytorch 0.5.0, cellpose 4.2.1.1,
+`environment.yml` was tested in October 2026 on Windows 11 with an RTX 4080: it installed PyTorch 2.14.1
+(CUDA 13.4), all tests passed, and the U-Net gave the same appearance times as the developers' venv, with
+identical areas on 97 % of the track rows (the others mostly 1 px, at most 35 px: rounding differences
+between PyTorch versions). The developers' venv has: torch 2.6.0+cu124, segmentation_models_pytorch 0.5.0, cellpose 4.2.1.1,
 napari 0.9.2, PyQt5 5.15.11, numpy 2.4, pandas 3.0, zarr 3.1, plotly 7.1.
 
 ### Check the installation
 
 ```bat
-python -c "import scanlag, torch; print('CUDA available:', torch.cuda.is_available())"
+conda activate scanlag
+python -c "import torch; from scanlag.device import torch_device; print('torch', torch.__version__, '- runs on:', torch_device())"
 python scripts\scanlag_pipeline.py --help
+:: with environment-training.yml installed:
 python -m pytest -q
 ```
 
@@ -158,7 +219,8 @@ The detectors load trained weights from the `models/` folder of the project:
 The folder names are resolved relative to the project folder, not the current directory
 (`scanlag/pipeline/run.py`, `MODELS`). A model folder is recognised as a U-Net if its `config.json` has
 `"type": "unet"`; otherwise it is loaded as a fine-tuned Cellpose model (`scanlag.detect.unet.load_detector`).
-The GPU is used automatically when `torch.cuda.is_available()` is true.
+The GPU (NVIDIA, or Apple silicon) is used automatically, see
+[which processor runs the networks](#install-with-conda-recommended).
 
 ---
 
@@ -212,6 +274,9 @@ Times are reported in minutes since time zero, which is the earlier of
 * the `YYYY/MM/DD HH:MM:SS - Starting.` line of a `run_*.log` file **in the same folder as the scans**, and
 * the first scan.
 
+The pipeline prints which one it used for each scanner (`time zero from first scan` or
+`time zero from run_<...>.log`). Only the scan folder itself is searched for the log, not its parent folders.
+
 ### Image assumptions (hard-coded)
 
 * 8-bit RGB TIFFs (extra channels are ignored). Uncompressed TIFFs are memory-mapped; compressed ones
@@ -229,34 +294,59 @@ Times are reported in minutes since time zero, which is the earlier of
 
 ```
 python scripts/scanlag_pipeline.py <scan folder> [--detector unet|cellpose|classical|<model dir>]
-                                   [--out DIR] [--plates N] [--mask-fraction F] [--threshold TH]
-                                   [--tracker footprint|seed] [--redo] [--review-only] [--no-review] [--reflag]
-                                   [--retrack]
+                                   [--out DIR] [--prefix P ...] [--scanner NAME ...] [--max-colonies N]
+                                   [--plates N] [--mask-fraction F] [--threshold TH] [--tracker footprint|seed]
+                                   [--workers N] [--no-review] [--overwrite]
+                                   [--redo | --review-only | --export-only | --reflag | --retrack]
 ```
+
+`python scripts\scanlag_pipeline.py --help` lists every option with its default.
 
 ### Arguments
 
 | Argument | Type | Default | Meaning |
 |---|---|---|---|
 | `scans` (positional) | folder | *required* | Folder with the raw scans (searched recursively). |
-| `--detector` | text | `unet` | `unet` = U-Net v1 (`models/unet_scanlag_v1`, about 0.15 s per plate per frame on GPU); `cellpose` = fine-tuned Cellpose-SAM v1 (`models/cpsam_scanlag_v1`, about 5.5 s per plate per frame); `classical` = MATLAB's threshold detector (no GPU or torch needed); or the path of any trained model folder. |
-| `--out` | folder | `<project folder>/results_<scan folder name>` | Results folder. Must not be inside the raw-data folder (and vice versa). |
+| `--detector` | text | `unet` | `unet` = U-Net v1 (`models/unet_scanlag_v1`, about 0.15 s per plate per frame on GPU); `cellpose` = fine-tuned Cellpose-SAM v1 (`models/cpsam_scanlag_v1`, about 5.5 s per plate per frame); `classical` = MATLAB's threshold detector (no GPU or torch needed); or the path of any trained model folder (one with a `config.json`). Anything else stops with `unknown detector ...`. |
+| `--out` | folder | `~/results/<scan folder name>` (`%USERPROFILE%\results\<scan folder name>` on Windows) | Results folder. Must not be inside the raw-data folder (and vice versa). |
+| `--prefix` | text, repeatable | all | Only the scanners whose file name prefix starts with this (case-insensitive), e.g. `--prefix epec-amp`. |
+| `--scanner` | text, repeatable | all | Only this scanner, e.g. `--scanner 1-4.1u` (case-insensitive). It matches either the results sub-folder name (`CTRL1_1-4.1u`) or the scanner name from the file names (`1-4.1u`, which selects all folders with that scanner). With `--prefix`, a scanner must match both. |
+| `--max-colonies` | integer | `500` | Before segmenting, the last frame of every plate is segmented once and its blobs of at least 10 px are counted (`<scanner>: last-frame blobs plate 1: 74, ...`). Colonies that have merged by then count once, so the true number of colonies is at least that. If plates have more blobs than this, the script asks `warning: <scanner>, plates ... are too dense (n>500). expect long runtimes and low quality tracks. exclude these plates? y/n`. Answering `n`, or no terminal, keeps them. Excluded plates get no results folder and are recorded in `scanner.json` as `excluded_plates`. `0` turns the check off. The check only covers scanners segmented in this run (not those already done, and not with `--review-only`, `--export-only`, `--reflag` or `--retrack`). |
 | `--plates` | integer | `6` | Number of plates per scanner. |
 | `--mask-fraction` | number | `0.8` | Radius of the working area (where colonies are counted) as a fraction of the plate radius. 0.8 is the MATLAB default. |
 | `--threshold` | number | `0.2` | Threshold `TH` of the **classical** detector only (ignored by models). |
 | `--tracker` | `footprint`, `seed` | `footprint` | `footprint`: each colony keeps its own pixels, and a blob of merged colonies is split between them, so every colony keeps its own area after merging. `seed`: MATLAB's seed-pixel tracker, where merged colonies all report the merged blob's area (section 8, Merges). |
-| `--redo` | flag | off | Segment again even if a scanner was already done. **Deletes that scanner's results folder, including your review decisions.** |
+| `--workers` | integer | `6` | Plates processed in parallel threads (`1` = one after another). The results do not depend on it; lower it if memory is short. |
+| `--no-review` | flag | off | Do not open the window; export the tables straight away (plates not reviewed yet keep their automatic statuses). Cannot be combined with `--review-only` (use `--export-only`). |
+| `--overwrite` | flag | off | Do not ask before `--redo` deletes existing results (for unattended runs). |
+| `--redo` | flag | off | Segment again even if a scanner was already done. **Deletes that scanner's results folder, including your review decisions.** First asks `warning: --redo will delete the results of A, B, including review decisions on N plate(s). proceed? y/n` (unless `--overwrite`); `n` or no terminal stops. No backup is made. |
 | `--review-only` | flag | off | Skip segmentation; open the review window on the existing results. |
-| `--no-review` | flag | off | Do not open the window; export the tables straight away (all colonies with their automatic status). |
+| `--export-only` | flag | off | Skip segmentation and the window; export the existing results. |
 | `--reflag` | flag | off | Recompute the review flags of existing results (keeps statuses and review decisions), then continue as usual (window, or export with `--no-review`). No segmentation is done. |
 | `--retrack` | flag | off | Track existing results again with `--tracker` (default `footprint`), from the stored segmentation (`labels.zarr`): no scans are read and no model runs, a few seconds per plate. Then continue as usual (window, or export with `--no-review`). **Colony numbers change, so each plate's review starts afresh**; the old `colonies.parquet` and `review.json` are kept as `colonies.<old tracker>.bak.parquet` and `review.<old tracker>.bak.json`. |
 
-Note: `--help` currently lists the options without explanations; the table above is taken from the
-script's docstring and code.
+`--redo`, `--review-only`, `--export-only`, `--reflag` and `--retrack` are mutually exclusive: give at most
+one of them.
+
+**Scanner filters (`--prefix`, `--scanner`)** apply to every step: the density check, the segmentation,
+`--reflag`, `--retrack`, the review window and the export. "Finish & export", `--no-review` and
+`--export-only` write the CSV tables of the selected scanners' plates only, and `all_colonies.csv`,
+`all_tracks.csv` and `summary.csv` then hold only those plates (an export without a filter writes them for
+all plates again). When the results folder holds other plates, the script says so (`note: only the N plates
+of the selected scanners are exported; all_colonies.csv, all_tracks.csv and summary.csv will leave out the
+other M`). After every export it lists the plates that were never opened in the review
+window (`K of them were never opened in the review window (automatic statuses): ...`).
+
+**Questions and unattended runs.** The script asks y/n only before `--redo` deletes results and when plates
+are too dense. Without a terminal (closed input) it prints `(no terminal: answering n)`: a `--redo` then
+stops, and dense plates are kept. Use `--overwrite` and `--max-colonies 0` (or a higher limit) for batch jobs.
 
 ### What happens
 
-1. **Scans** are found and grouped by scanner (section 3).
+1. **Scans** are found and grouped by scanner (section 3), and filtered by `--prefix` / `--scanner`. The
+   script prints each scanner with its number of scans and where its time zero came from. Scanners that
+   already have results (a `scanner.json`) are skipped (unless `--redo`). For the others, the last frame of each
+   plate is segmented to estimate its density, and you may exclude very dense plates (`--max-colonies`).
 2. **Plates** are found with a Hough circle transform on the background scan, refined by a least-squares
    fit to the plate rim, and numbered like MATLAB's `CreateBoardHint`: by column from left to right, and
    top to bottom within a column (on a 2 × 3 board, plates 1-3 are the left column).
@@ -272,16 +362,22 @@ script's docstring and code.
    them (footprint tracker, the default; section 8, Merges). With `--tracker seed`, the blob covering the
    seed belongs to the colony, as in MATLAB.
 6. **Status and flags** are set automatically (section 8).
-7. The **review window** opens with all plates of all scanners in the results folder.
+7. The **review window** opens with all plates in the results folder (only those of the selected scanners
+   if `--prefix` / `--scanner` was given).
 
 Re-running the same command skips scanners that are already segmented (it prints
-`already segmented with ... (use --redo to repeat)`) and reopens the window with the decisions made so far.
-A scanner folder left without `scanner.json` (e.g. an interrupted run) is deleted and redone.
+`already segmented with ... (use --redo to repeat)`) and reopens the window with the decisions made so far,
+without asking anything. A scanner folder left without `scanner.json` (e.g. an interrupted run) is deleted
+and redone without a question; the script prints `<scanner>: removing the results of an interrupted run`.
+
+Plates excluded by the density check are not processed later on a plain re-run, because their scanner
+counts as done. To process them after all, run that scanner again with
+`--redo --scanner <name> --max-colonies 0` (this deletes the scanner's review decisions).
 
 ### Examples
 
 ```bat
-:: default: U-Net detector, results in <project>\results_EPEC260224, then the review window
+:: default: U-Net detector, results in %USERPROFILE%\results\EPEC260224, then the review window
 python scripts\scanlag_pipeline.py "D:\Experiments\EPEC260224"
 
 :: MATLAB-style threshold detector, results somewhere else, 4 plates per scanner
@@ -290,8 +386,15 @@ python scripts\scanlag_pipeline.py "D:\Experiments\EPEC260224" --detector classi
 :: reopen the review window later (same scan folder, same --out if you used one)
 python scripts\scanlag_pipeline.py "D:\Experiments\EPEC260224" --review-only
 
+:: only one scanner, and only the scanners of the epec-amp7 files
+python scripts\scanlag_pipeline.py "D:\Experiments\EPEC260224" --scanner 1-4.1u
+python scripts\scanlag_pipeline.py "D:\Experiments\EPEC260224" --prefix epec-amp7
+
 :: batch run without a window, using another trained model
 python scripts\scanlag_pipeline.py "D:\Experiments\EPEC260224" --detector models\unet_scanlag_v2 --no-review
+
+:: write the CSV tables again from the existing results (no segmentation, no window)
+python scripts\scanlag_pipeline.py "D:\Experiments\EPEC260224" --export-only
 ```
 
 Rough speed (from the developers' notes): EPEC260224, 4 scanners and 371 scans, took 11.5 min with the
@@ -389,9 +492,11 @@ Every change is saved **immediately**; you can close the window at any time and 
   `{"time", "action": "exclude all" | "reset", "colony_ids": [...]}`. `visited` becomes true when the
   plate is opened.
 
-**Finish & export** (warns if some plates were never opened) writes the CSV tables for **all** plates in
-the results folder (section 7) and closes the window. You can also export without the window with
-`--review-only --no-review`, which skips segmentation and goes straight to export.
+**Finish & export** (warns if some plates shown in the window were never opened) writes the CSV tables for
+the plates in the window (section 7): all plates in the results folder, or only the selected scanners' with
+`--prefix` / `--scanner`; then it closes the window. The terminal then lists every exported plate that was never opened in
+the window (those keep their automatic statuses). You can also export without the window with
+`--export-only`, which skips segmentation and goes straight to export.
 
 ---
 
@@ -402,7 +507,7 @@ draw per-condition histograms. Only **included** colonies (status 0) are used, r
 `colonies.parquet` files, so the latest review decisions always apply (you do not need to export first).
 
 ```
-python scripts/scanlag_analysis.py <results folder> [--layout CSV | --condition NAME=scanner:plates ...]
+python scripts/scanlag_analysis.py <results folder | experiment name> [--layout CSV | --condition NAME=scanner:plates ...]
                                    [--out DIR] [--growth radial|doubling|both] [--fit-frames FIRST-LAST]
                                    [--doubling-range LB UB] [--bin MIN] [--rate-bin W] [--no-open]
 ```
@@ -411,9 +516,9 @@ python scripts/scanlag_analysis.py <results folder> [--layout CSV | --condition 
 
 | Argument | Type | Default | Meaning |
 |---|---|---|---|
-| `results` (positional) | folder | *required* | The `results_<experiment>` folder written by the pipeline. |
+| `results` (positional) | folder or name | *required* | The results folder written by the pipeline, or just the experiment name (e.g. `EPEC260224`): a bare name that is not a folder in the current directory is looked up in `~/results` (`%USERPROFILE%\results`). |
 | `--layout` | file | `<results>/conditions.csv` | Condition layout CSV (see below). |
-| `--condition` | text, repeatable | none | Layout on the command line instead of a file: `NAME=scanner:plates[;scanner:plates]`, one per condition. When given, `--layout` is not read. |
+| `--condition` | text, repeatable | none | Layout on the command line instead of a file: `NAME=scanner:plates[;scanner:plates]`, one per condition. When given, `--layout` is not read. The same checks as for `conditions.csv` apply (a plate in two conditions is an error). |
 | `--out` | folder | `<results>/analysis` | Output folder. |
 | `--growth` | `radial`, `doubling`, `both` | `radial` | Which growth histogram(s) to draw. The tables always contain both metrics. |
 | `--merged-growth` | `exclude`, `split` | `exclude` | `exclude`: both growth metrics stop at the colony's first merge (as MATLAB). `split`: also use the merged frames, with the colony's own share of the merged blob (footprint tracker; plates tracked with `--tracker seed` fall back to `exclude` with a warning). |
@@ -440,7 +545,10 @@ AMP5,1-5.1u,4-6
 * Rows with an empty `condition` are ignored (so you can leave plates out).
 * A plate listed in two conditions is an error.
 * A listed plate without results (an empty slot, or not processed) is skipped with a warning.
-* Scanner names are the results sub-folder names (e.g. `1-4.1u`). The script prints
+* Two condition names that would get the same output folder (e.g. `A B` and `A/B`, see "Condition folder
+  names" below) are an error; rename one.
+* The `scanner` column takes scanner folders, i.e. the results sub-folder names (e.g. `1-4.1u`, or
+  `CTRL1_1-4.1u` when a scanner name occurs in two scan folders; see the glossary in section 8). The script prints
   `plates found: ...` at the start to help you.
 
 **If `conditions.csv` does not exist**, the script writes a template there (one row per scanner, with all
@@ -477,7 +585,7 @@ growth values. `first_merged_min` gives the time of the first merge.
 | `<condition>/area_matrix.csv` | One row per colony (`condition, scanner, plate, colony_id`), one column per frame (`frame_0`, `frame_1`, ...), area in px, 0 when absent. Frame numbers are only comparable within a scanner (each scanner has its own scan times; use `area_tracks.csv` for times). |
 | `all_colonies.csv` | All conditions together. |
 | `summary.csv` | Per condition: `n_scanners`, `n_plates`, `n_colonies`, and for `appearance_min`, `radial_growth_sqrtpx_per_h`, `radial_growth_um_per_h`, `doubling_time_min` the `_n`, `_mean`, `_median`, `_std`. |
-| `settings.json` | The fit settings (`fit_first`, `fit_last`, `min_points`, `lb`, `ub`) and the layout used. |
+| `settings.json` | `fit`: the fit settings (`fit_first`, `fit_last`, `min_points`, `lb`, `ub`, `merged_growth`); `layout`: the layout used. |
 | `histograms.html` | Interactive histograms (opens in the browser; self-contained, works offline). |
 
 Columns of `colonies.csv` / `all_colonies.csv`: `condition, scanner, plate, colony_id, appearance_frame,
@@ -485,7 +593,8 @@ appearance_min, appearance_h, radial_growth_sqrtpx_per_h, radial_growth_um_per_h
 radial_fit_points, doubling_time_min, doubling_time_h, first_merged_min, final_area_px, seed_x, seed_y,
 n_flags, flags`.
 
-Condition folder names are the condition names with spaces and `<>:"/\|?*` replaced by `_`.
+Condition folder names are the condition names with spaces and `<>:"/\|?*` replaced by `_`. If two conditions
+would get the same folder, the script stops with `conditions that would share an output folder, ...`.
 
 ### Reading the histograms
 
@@ -505,31 +614,35 @@ The script also prints the summary table (median appearance, median growth, n pe
 ### Examples
 
 ```bat
-:: first run: writes results_EPEC260224\conditions.csv and stops; fill it in, then:
-python scripts\scanlag_analysis.py results_EPEC260224
+:: first run: writes %USERPROFILE%\results\EPEC260224\conditions.csv and stops; fill it in, then:
+python scripts\scanlag_analysis.py EPEC260224
 
 :: both growth histograms, fit over frames 2-10 after appearance, 30 min time bins
-python scripts\scanlag_analysis.py results_EPEC260224 --growth both --fit-frames 2-10 --bin 30
+python scripts\scanlag_analysis.py EPEC260224 --growth both --fit-frames 2-10 --bin 30
+
+:: a results folder written with --out is passed as a path
+python scripts\scanlag_analysis.py "E:\results\EPEC260224_classical"
 
 :: conditions on the command line, written to a separate folder, no browser
-python scripts\scanlag_analysis.py results_EPEC260224 --condition "CTRL=1-4.1u:1-3;1-5.1u:1-3" --condition "AMP7=1-4.1u:4-6;1-5.1u:4-6" --out results_EPEC260224\analysis_v2 --no-open
+python scripts\scanlag_analysis.py EPEC260224 --condition "CTRL=1-4.1u:1-3;1-5.1u:1-3" --condition "AMP7=1-4.1u:4-6;1-5.1u:4-6" --out "%USERPROFILE%\results\EPEC260224\analysis_v2" --no-open
 ```
 
 ---
 
 ## 7. Output files reference
 
-Default results folder: `<project folder>/results_<scan folder name>/`.
+Default results folder: `~/results/<scan folder name>/` (`%USERPROFILE%\results\<scan folder name>` on Windows).
 
 ```
-results_EPEC260224/
+EPEC260224/                      e.g. %USERPROFILE%\results\EPEC260224
   .scanlag_results.json          which raw folder(s) this results folder belongs to
   conditions.csv                 your condition layout (section 6)
   all_colonies.csv               export: every plate's colonies.csv, stacked
   all_tracks.csv                 export: every plate's tracks.csv, stacked
   summary.csv                    export: colony counts per plate
   <scanner>/
-    scanner.json                 detector, number of scans, plates, settings used
+    scanner.json                 detector, model (resolved model folder, null for classical), number of scans,
+                                 plates, excluded_plates (density check), config (settings used, without workers)
     plate_<k>/                   k = plate number (empty slots have no folder)
       plate.json                 geometry, scans, times, alignment, settings
       mask.png                   working area (1-bit PNG)
@@ -613,6 +726,20 @@ no colony). A blob of merged colonies is divided between them here.
 ---
 
 ## 8. Concepts: status codes, merges, flags, coordinates, units
+
+### Glossary
+
+| Term | Meaning |
+|---|---|
+| scanner name | The scanner as written in the scan file names, e.g. `1-4.1u` (`Scanner.label`, `scanner_label` in `plate.json`). |
+| scanner folder | The results sub-folder of one time-lapse (`Scanner.name`, `scanner` in `plate.json` and the tables). Usually the scanner name; `<scan folder>_<scanner name>` (e.g. `CTRL1_1-4.1u`) when the same scanner name occurs in two scan folders. The `scanner` column of `conditions.csv` and `compare_with_matlab.py --scanner` take scanner folders; the pipeline's `--scanner` takes either. |
+| plate | One Petri dish on the scanner board, numbered 1 to `--plates` in MATLAB board order (section 4). Results are in `<scanner folder>/plate_<k>/`. |
+| slot | A position on the board. An empty slot (no dish) is detected and skipped, so its plate number has no folder. |
+| blob | One connected object the detector found in one frame (a label in `labels.zarr`). A blob can hold several colonies (a merge) or be debris. |
+| colony | A tracked object with its own number (`colony_id`), followed from its first blob of at least 10 px to the last frame. |
+| seed | The colony's rounded centroid in its first frame (`seed_x`, `seed_y`). The seed tracker follows a colony by this pixel. |
+| footprint | A colony's own pixels in the previous frame. The footprint tracker (default) follows colonies by their footprints and splits merged blobs between them (`colonies.zarr`). |
+| auto status | The status the pipeline gave a colony before review (`auto_status`; "detected as" in the review window). `status` is the current one, including your decisions. |
 
 ### Colony status codes
 
@@ -712,10 +839,10 @@ run, with both sets of metrics), `status_crosstab.csv`, `area_tracks.png`, `pair
 is printed.
 
 ```bat
-python scripts\compare_with_matlab.py results_EPEC260224 "D:\Experiments\EPEC260224\CTRL1\ROI" --scanner 1-4.1u
+python scripts\compare_with_matlab.py "%USERPROFILE%\results\EPEC260224" "D:\Experiments\EPEC260224\CTRL1\ROI" --scanner 1-4.1u
 
 :: MATLAB folders named sep_2_<plate>, stricter matching
-python scripts\compare_with_matlab.py results_EPEC260224 "D:\Experiments\EPEC260224\CTRL2\ROI" --scanner 1-4.4.1u --matlab-scanner 2 --max-dist 5
+python scripts\compare_with_matlab.py "%USERPROFILE%\results\EPEC260224" "D:\Experiments\EPEC260224\CTRL2\ROI" --scanner 1-4.4.1u --matlab-scanner 2 --max-dist 5
 ```
 
 ---
@@ -727,28 +854,36 @@ The project contains two shared run configurations (`.idea/runConfigurations/`):
 | Configuration | Script | Prompt |
 |---|---|---|
 | **ScanLag pipeline** | `scripts/scanlag_pipeline.py` | "Scan folder, then any options (e.g. --detector classical, --review-only)" |
-| **ScanLag analysis** | `scripts/scanlag_analysis.py` | "Results folder (e.g. results_EPEC260224), then any options (e.g. --growth both)" |
+| **ScanLag analysis** | `scripts/scanlag_analysis.py` | "Experiment name in ~/results or results folder (e.g. EPEC260224), then any options (e.g. --growth both)" |
 
-1. Open the project folder in PyCharm and select the interpreter `.venv` (Settings → Project → Python
-   Interpreter). The configurations use the project interpreter and the project folder as working directory.
+1. Open the project folder in PyCharm and select the `scanlag` conda environment (or `.venv`) as interpreter
+   (Settings → Project → Python Interpreter → Add Interpreter → Conda Environment → Use existing). The configurations use the project interpreter and the project folder as working directory.
 2. Pick the configuration in the run-configuration drop-down and press Run (Shift+F10).
 3. A box asks for the parameters. Type **the folder first, then the options**, for example:
 
    ```
    D:\Experiments\EPEC260224 --detector classical
-   results_EPEC260224 --growth both --fit-frames 2-10
+   EPEC260224 --growth both --fit-frames 2-10
    ```
+
+   For the analysis, the experiment name is enough when the results are in `~/results`; otherwise type the
+   full path of the results folder (PyCharm passes the text to Python without a shell, so do not rely on
+   `%USERPROFILE%` or `~` there).
 
 PyCharm passes everything typed in that box as one argument. `scanlag.cli.split_prompt_args` splits it
 again **before each ` --`**, so folder names with spaces work with or without quotes, and a quoted path
 ending in a backslash (`"D:\scans\exp\" --redo`) is handled. Consequences:
 
-* Put the folder first. `--detector classical D:\scans` would be read as the detector `classical D:\scans`.
+* Put the folder first. `--detector classical D:\scans` would be read as the detector `classical D:\scans`
+  (and stop with `unknown detector ...`).
 * Option values that themselves contain ` --` are not supported.
 
 For the other scripts, create a run configuration (Run → Edit Configurations → + → Python), set the script
-path, the parameters and the working directory to the project folder. Relative paths such as
-`results_EPEC260224` are relative to the working directory.
+path, the parameters and the working directory to the project folder. Relative paths are relative to the
+working directory, so give results folders under `~/results` as full paths.
+
+The pipeline may ask y/n questions (`--redo` deleting results, dense plates); type the answer in PyCharm's
+Run console and press Enter.
 
 ---
 
@@ -764,7 +899,7 @@ import pandas as pd
 from scanlag.pipeline.run import load_plate_dirs, plate_info
 from scanlag.pipeline.export import plate_tables
 
-results = Path("results_EPEC260224")
+results = Path.home() / "results" / "EPEC260224"   # the pipeline's default results folder
 plates = load_plate_dirs(results)             # [.../1-4.1u/plate_1, ...]
 colonies, tracks, matrix = plate_tables(plates[0])
 included = colonies[colonies.included]
@@ -774,9 +909,10 @@ included = colonies[colonies.included]
 |---|---|---|
 | `scanlag.pipeline.run.load_plate_dirs` | `(results: Path) -> list[Path]` | All `<scanner>/plate_<k>` folders that have a `colonies.parquet`, sorted. |
 | `scanlag.pipeline.run.plate_info` | `(plate_dir) -> dict` | Contents of `plate.json`. |
-| `scanlag.pipeline.export.plate_tables` | `(plate_dir: Path) -> (colonies, tracks, area_matrix)` | The three per-plate DataFrames exactly as exported to CSV (section 7), using the current review statuses. |
+| `scanlag.pipeline.export.plate_tables` | `(plate_dir: Path, merged_growth="exclude") -> (colonies, tracks, area_matrix)` | The three per-plate DataFrames exactly as exported to CSV (section 7), using the current review statuses. `merged_growth` as in `scanlag_analysis.py --merged-growth`. |
 | `scanlag.pipeline.export.export` | `(results: Path, store: ResultsStore, log=print) -> None` | Writes all CSV exports (what "Finish & export" does). |
 | `scanlag.pipeline.run.refresh_flags` | `(plate_dir: Path) -> int` | Recomputes flags in place; returns the number of flagged colonies. |
+| `scanlag.pipeline.run.retrack_plate` | `(store: ResultsStore, plate_dir: Path, tracker="footprint") -> dict` | What `--retrack` does for one plate; backs up the old `colonies.parquet` / `review.json`. Returns the old tracker and the old and new colony counts. |
 
 ### Condition analysis
 
@@ -794,14 +930,15 @@ fig.show()
 
 | Name | Signature | Notes |
 |---|---|---|
-| `FitConfig` | dataclass `(fit_first=1, fit_last=12, min_points=4, lb=20, ub=80)` | Radial-fit window (frames from appearance), minimum points, doubling-time range (px). |
+| `FitConfig` | dataclass `(fit_first=1, fit_last=12, min_points=4, lb=20, ub=80, merged_growth="exclude")` | Radial-fit window (frames from appearance), minimum points, doubling-time range (px), and `--merged-growth`. |
 | `parse_plates` | `(text) -> list[int]` | `"1,2,4-6"` → `[1, 2, 4, 5, 6]`; raises `ValueError` on bad input. |
 | `read_layout` | `(path: Path) -> DataFrame` | One row per (condition, scanner, plate); raises `ValueError` on missing columns or a plate in two conditions. |
+| `expand_layout` | `(table: DataFrame) -> DataFrame` | The same from a table with columns `condition, scanner, plates` (what `--condition` builds); raises `ValueError` for a plate in two conditions. |
 | `available_plates` | `(results: Path) -> dict[str, list[int]]` | scanner → processed plate numbers. |
 | `layout_template` | `(results: Path) -> DataFrame` | Template layout with empty conditions. |
 | `collect` | `(results: Path, layout: DataFrame, cfg: FitConfig = FitConfig()) -> ConditionData` | `ConditionData` has `.colonies`, `.tracks` (included colonies only), `.conditions` (in layout order), `.missing` (plates without results). Raises `FileNotFoundError` if no plate is found. |
-| `radial_growth` | `(tracks: DataFrame, cfg: FitConfig) -> DataFrame` | Per colony (`scanner, plate, colony_id`): `slope` (px^0.5/h), `r2`, `n`. Needs columns `scanner, plate, colony_id, frame, time_h, area_px, merged`. |
-| `doubling_time` | `(tracks: DataFrame, lb: float, ub: float) -> Series` | colony_id → **hours** from lb to ub px, for one plate. |
+| `radial_growth` | `(tracks: DataFrame, cfg: FitConfig, use_merged=False) -> DataFrame` | Per colony (`scanner, plate, colony_id`): `slope` (px^0.5/h), `r2`, `n`. Needs columns `scanner, plate, colony_id, frame, time_h, area_px, merged`. |
+| `doubling_time` | `(tracks: DataFrame, lb: float, ub: float, use_merged=False) -> Series` | colony_id → **hours** from lb to ub px, for one plate. |
 | `area_matrix` | `(tracks: DataFrame) -> DataFrame` | Wide colony × frame table. |
 | `summary` | `(colonies: DataFrame, conditions: list[str]) -> DataFrame` | Per-condition n / mean / median / std. |
 | `scanlag.analysis.plots.histograms` | `(colonies, conditions, metric, title, xlabel, unit, width=None) -> plotly Figure` | `width=None` picks bins automatically. |
@@ -815,18 +952,22 @@ from scanlag.pipeline.run import RunConfig, process_scanner
 from scanlag.store import ResultsStore
 
 raw = Path(r"D:\Experiments\EPEC260224")
-store = ResultsStore.for_raw_dir(raw)                    # results_EPEC260224 in the project folder
+store = ResultsStore.for_raw_dir(raw)                    # ~/results/EPEC260224
 for scanner in find_scanners(raw):
     process_scanner(scanner, store, RunConfig(detector="classical"))
 ```
 
 | Name | Signature | Notes |
 |---|---|---|
-| `scanlag.pipeline.scans.find_scanners` | `(root) -> list[Scanner]` | `Scanner` has `name, label, directory, scans, times, start` and the property `times_min`. Raises `FileNotFoundError` if no scan matches. |
-| `scanlag.pipeline.run.RunConfig` | dataclass `(detector="unet", n_plates=6, mask_fraction=0.8, threshold=0.2, min_upper_limit=0.06, min_area=10)` | `min_upper_limit` (classical contrast floor) and `min_area` (px to start a colony) are not exposed on the command line. |
-| `scanlag.pipeline.run.process_scanner` | `(scanner, store, cfg, log=print) -> list[Path]` | Segments and tracks all plates of one scanner; returns the plate folders. Does **not** write `scanner.json` (the script does). |
+| `scanlag.pipeline.scans.find_scanners` | `(root) -> list[Scanner]` | `Scanner` has `name` (results sub-folder), `label` (scanner name from the file names), `directory, scans, times, start, prefix, time_zero` (where `start` came from: `"first scan"` or the robot log's file name) and the property `times_min`. Raises `FileNotFoundError` if no scan matches. |
+| `scanlag.pipeline.scans.select_scanners` | `(scanners, prefixes=(), names=()) -> list[Scanner]` | The `--prefix` / `--scanner` filter. Raises `ValueError` (listing the scanners found) if nothing matches. |
+| `scanlag.pipeline.run.RunConfig` | dataclass `(detector="unet", n_plates=6, mask_fraction=0.8, threshold=0.2, min_upper_limit=0.06, min_area=10, tracker="footprint", workers=6)` | `min_upper_limit` (classical contrast floor) and `min_area` (px to start a colony) are not exposed on the command line. |
+| `scanlag.pipeline.run.model_dir` | `(detector: str) -> Path \| None` | The model folder of `unet`, `cellpose` or a folder path; `None` for `classical`. Raises `ValueError` if the folder has no `config.json`. |
+| `scanlag.pipeline.run.make_segmenter` | `(cfg, log=print)` | The detector chosen by `cfg.detector`, to reuse across scanners. |
+| `scanlag.pipeline.run.last_frame_counts` | `(scanner, cfg, seg=None, log=print) -> dict[int, int]` | Plate number → colonies (blobs ≥ `min_area` px) on the last frame: the `--max-colonies` density check. |
+| `scanlag.pipeline.run.process_scanner` | `(scanner, store, cfg, log=print, seg=None, exclude=()) -> list[Path]` | Segments and tracks all plates of one scanner, except the plate numbers in `exclude`; returns the plate folders. `seg` reuses a segmenter from `make_segmenter`. Does **not** write `scanner.json` (the script does). |
 | `scanlag.store.ResultsStore` | `(results_dir, raw_dirs: list)`; `ResultsStore.for_raw_dir(raw_dir, results_dir=None)` | The only writer; refuses paths inside raw data. Methods `path(*parts)`, `write_json`, `write_table` (`.csv` or parquet), `write_mask`, `write_image`, `create_labels`. |
-| `scanlag.store.default_results_dir` | `(raw_dir, root=PROJECT_ROOT) -> Path` | `<root>/results_<raw folder name>`. |
+| `scanlag.store.default_results_dir` | `(raw_dir, root=RESULTS_ROOT) -> Path` | `<root>/<raw folder name>`; `RESULTS_ROOT` is `~/results`. |
 | `scanlag.gui.review.run_review` | `(plate_dirs: list[Path], on_finish=None) -> None` | Opens the review window (blocks until closed). Importing this module switches matplotlib to the Qt backend. |
 
 ### Images, plates, detectors, tracking
@@ -884,9 +1025,9 @@ build_testset.py  →  select_tiles.py  →  annotate_tiles.py  →  train_unet.
                                      evaluate_goldset.py / evaluate_plates.py  →  scanlag_pipeline.py --detector models\<name>
 ```
 
-**Important:** the training scripts' default `--name` is the name of the shipped model
-(`unet_scanlag_v1`, `cpsam_scanlag_v1`), so training without `--name` **overwrites it**. Always give a new
-name, e.g. `--name unet_scanlag_v3`.
+The training scripts need `--name` (the new folder under `models/`, e.g. `--name unet_scanlag_v3`), and refuse
+an existing `models/<name>` unless `--force` is given, so the shipped models are not overwritten by accident.
+Every script in this section prints its options with `--help`.
 
 ### `build_testset.py` — MATLAB reference test set
 
@@ -935,13 +1076,14 @@ fresh label, press M for a new ID; delete debris by filling with label 0; add mi
 ### `train_unet.py`
 
 ```
-python scripts/train_unet.py [--testset DIR] [--name NAME] [--steps N] [--scale S] [--min-upper-limit L]
+python scripts/train_unet.py --name NAME [--force] [--testset DIR] [--steps N] [--scale S] [--min-upper-limit L]
 ```
 
 | Argument | Default | Meaning |
 |---|---|---|
 | `--testset` | `<project>/testset_matlab` | Test set with gold tiles; `train/tiles.npz` is built there if missing. |
-| `--name` | `unet_scanlag_v1` (**overwrites the shipped model**) | Output folder `models/<name>/`. |
+| `--name` | *required* | Output folder `models/<name>/`. |
+| `--force` | off | Overwrite `models/<name>/` if it exists. |
 | `--steps` | `6000` | Optimizer steps (batch 16). v1 was trained with 10 000 (about 12 min on an RTX 4080). |
 | `--scale` | `2.0` | Input upscaling factor. |
 | `--min-upper-limit` | `0.0` | Drop MATLAB tiles from plates whose contrast upper limit is below this. |
@@ -957,19 +1099,20 @@ python scripts\train_unet.py --name unet_scanlag_v3 --steps 10000
 ### `train_cellpose.py`
 
 ```
-python scripts/train_cellpose.py [--testset DIR] [--name NAME] [--steps N] [--batch-size B] [--accumulate A] [--rebuild-tiles]
+python scripts/train_cellpose.py --name NAME [--force] [--testset DIR] [--steps N] [--batch-size B] [--accumulate A] [--rebuild-tiles]
 ```
 
 | Argument | Default | Meaning |
 |---|---|---|
 | `--testset` | `<project>/testset_matlab` | Test set. |
-| `--name` | `cpsam_scanlag_v1` (**overwrites**) | Output folder `models/<name>/`. |
+| `--name` | *required* | Output folder `models/<name>/`. |
+| `--force` | off | Overwrite `models/<name>/` if it exists. |
 | `--steps` | `8000` | Optimizer steps (about 65 min on an RTX 4080). |
 | `--batch-size` | `2` | Tiles per forward pass. |
 | `--accumulate` | `2` | Forward passes per optimizer step (effective batch = 4). |
 | `--rebuild-tiles` | off | Rebuild `train/tiles.npz` even if it exists. |
 
-Needs `cellpose` (≥ 4); the base Cellpose-SAM weights are fetched by Cellpose on first use.
+Needs `environment-training.yml` (pip route: the `cellpose` extra); the base Cellpose-SAM weights are fetched by Cellpose on first use.
 
 ### Evaluation scripts
 
@@ -994,23 +1137,63 @@ not used for training.
 ## 13. Troubleshooting and FAQ
 
 **`ModuleNotFoundError: No module named 'scanlag'`**
-Install the package in the active environment: `pip install -e .` from the project folder. In PyCharm,
-select the `.venv` interpreter.
+Activate the environment first (`conda activate scanlag`). If it is active, install the package in it:
+`pip install -e .` from the project folder. In PyCharm, select the `scanlag` interpreter.
 
 **`No module named 'segmentation_models_pytorch'` or `'fastremap'`**
-The default U-Net detector needs both, but they are not in `pyproject.toml` yet:
-`pip install segmentation-models-pytorch fastremap`. Or use `--detector classical`.
+The default U-Net detector needs both. They are in `environment.yml` (pip route: the `dl` extra,
+`pip install -e ".[dl]"`). Or use `--detector classical`.
+
+**`No module named 'cellpose'`**
+Cellpose is not in the user environment: `conda env update -n scanlag -f environment-training.yml`.
+
+**The U-Net runs on the CPU although the machine has an NVIDIA GPU**
+`python -c "import torch; print(torch.__version__, torch.cuda.is_available())"` prints `False`: the
+environment was created from `environment-cpu.yml`, or the driver was updated or broken since. Check
+`nvidia-smi`, then `conda env remove -n scanlag` and create it again from `environment.yml`. Also check
+that `SCANLAG_DEVICE` is not set to `cpu`.
+
+**An error mentioning `mps` on a Mac**
+Some operation is missing from PyTorch's Apple-GPU backend. Run on the CPU instead with
+`SCANLAG_DEVICE=cpu` (see [which processor runs the networks](#install-with-conda-recommended)) and
+please report the error.
+
+**`nothing provides __cuda` when creating the environment**
+`environment.yml` needs an NVIDIA GPU with its driver installed. Use `environment-cpu.yml`.
+
+**`unknown detector ...: use unet, cellpose, classical or a trained model folder (one with a config.json)`**
+`--detector` was neither an alias nor a folder holding a trained model. Check the spelling or the path; for
+`cellpose`, the folder `models/cpsam_scanlag_v1` must have been copied in (it is not in git).
 
 **`... no scans named [<prefix>]_<scanner>_<YYYYMMDD>_<HHMM>.tif under ...`**
 Check the file names (section 3) and that you passed the experiment folder, not a single file.
 
-**`found N plate-sized circles, expected 6`**
+**`found N plate-sized circles, expected 6. If the board holds fewer plates, use --plates; ...`**
 Fewer dish-like circles were found on the background scan. If the board holds fewer plates, use
-`--plates N`. The detector expects 90 mm plates scanned at 300 dpi.
+`--plates N`. The detector expects 90 mm plates scanned at 300 dpi (neither can be changed from the command
+line).
 
 **`... already holds results for [...]; choose another results directory for [...]`**
 Each results folder remembers its raw folder (`.scanlag_results.json`). Two experiments whose folders have
-the same name (e.g. two `AMP7`) would share `results_AMP7`; give one of them `--out`.
+the same name (e.g. two `AMP7`) would share `~/results/AMP7`; give one of them `--out`.
+
+**`warning: --redo will delete the results of ..., including review decisions on N plate(s). proceed? y/n`**
+`--redo` is about to delete complete results of those scanners. `y` deletes them and segments again; `n` (or
+no terminal: `(no terminal: answering n)`) stops with `stopped`. No backup is made, so copy
+`colonies.parquet` and `review.json` first if you want to keep the decisions. `--overwrite` skips the question
+(for batch jobs).
+
+**`warning: ... plates ... are too dense (n>500). ... exclude these plates? y/n`**
+The density check found more blobs on the last frame than `--max-colonies` (merged colonies count once, so
+there are at least that many colonies). `y` leaves those plates out (recorded in `scanner.json` as
+`excluded_plates`); `n`, or no terminal, processes them anyway. Raise the limit or use `--max-colonies 0` to
+skip the check.
+
+**`--review-only with --no-review does nothing but export: use --export-only`** / **`not allowed with argument ...`**
+`--redo`, `--review-only`, `--export-only`, `--reflag` and `--retrack` cannot be combined; give one of them.
+
+**`no scanner matches the filter; found: ...`**
+`--prefix` / `--scanner` matched nothing. The message lists every scanner with its prefix; copy a name from it.
 
 **`RawDataProtectionError: ... must be separate from raw data`**
 `--out` points inside the raw-data folder (or the reverse). Raw data is never written to; choose a
@@ -1018,12 +1201,12 @@ results folder elsewhere.
 
 **Is my raw data safe?**
 Yes, by design: scans are opened read-only, and all writes go through `ResultsStore`, which refuses any
-path inside a raw-data folder. Results go to `<project>/results_<folder>` by default. You can keep raw
+path inside a raw-data folder. Results go to `~/results/<folder>` by default. You can keep raw
 data on a read-only drive.
 
 **I re-ran with `--redo` and my review decisions are gone.**
-`--redo` deletes the scanner's results folder, including `colonies.parquet` and `review.json`. Copy those
-files first if you want to keep a record. To recompute only the flags, use `--reflag` instead; to track
+`--redo` deletes the scanner's results folder, including `colonies.parquet` and `review.json` (it asks first,
+unless `--overwrite`). Copy those files first if you want to keep a record. To recompute only the flags, use `--reflag` instead; to track
 again (e.g. switch an experiment processed before the footprint tracker to it), use `--retrack`, which keeps
 the segmentation and backs up the old decisions as `*.bak` files.
 
@@ -1046,7 +1229,15 @@ That is expected on the first run: open `<results>/conditions.csv`, fill in the 
 again (section 6). Use `--condition` to skip the file.
 
 **`plates assigned to more than one condition: ...`**
-A plate is listed under two conditions in `conditions.csv`. Each plate may belong to one condition only.
+A plate is listed under two conditions in `conditions.csv` or in the `--condition` options. Each plate may
+belong to one condition only.
+
+**`conditions that would share an output folder, rename one of each: ...`**
+Two condition names become the same folder name (e.g. `A B` and `A/B` both become `A_B`). Rename one.
+
+**`... is not a folder` from `scanlag_analysis.py`**
+Neither the path nor `~/results/<name>` exists. Pass the full path of the results folder (e.g. one written
+with `--out`).
 
 **`warning: no results for 1-4.1u plate 3 (empty slot or not processed), skipped`**
 That plate has no results folder (the slot was empty, or the scanner was not processed). Harmless if
@@ -1065,7 +1256,8 @@ plates; the U-Net uses fixed normalisation. See `docs/PLAN.md` §12.1. `--detect
 MATLAB's detection (with a floor on very low contrast limits).
 
 **It is slow.**
-Check `torch.cuda.is_available()`. Without a GPU, use `--detector classical` or expect much longer runs.
+Check where the networks run (`python -c "from scanlag.device import torch_device; print(torch_device())"`
+prints `cuda`, `mps` or `cpu`). Without a GPU, use `--detector classical` or expect much longer runs.
 Cellpose is about 40× slower than the U-Net.
 
 ---
@@ -1073,15 +1265,20 @@ Cellpose is about 40× slower than the U-Net.
 ## 14. Running the tests
 
 ```bat
-.venv\Scripts\activate
+conda activate scanlag
 python -m pytest -q
 ```
 
-37 tests cover file-name parsing, raw-data protection, the classical detector (bit-exactness with MATLAB),
-tracking, flags, plate geometry, the U-Net and Cellpose training utilities, metrics and the condition
-analysis. They need the `dl` extras plus `segmentation-models-pytorch` and `cellpose`. One test
-(`test_parity_with_matlab_on_dense_plate`) uses a MATLAB plate on the developers' `D:` drive and is skipped
-when that data is not present. At the time of writing: **37 passed** (about 1 min).
+The tests cover file-name parsing and the scanner filters, raw-data protection, the classical detector
+(bit-exactness with MATLAB), tracking, flags, plate geometry, re-tracking a stored plate, the
+speed-ups (same results as the slower reference code), the command-line scripts (`tests/test_scripts.py`:
+y/n questions, conflicting flags, `--redo` bookkeeping, dense-plate exclusion, analysis checks, the export
+note), the U-Net and Cellpose training utilities, metrics, the condition analysis and the consistency of the
+environment files. They need `environment-training.yml` on top of `environment.yml` (pip route: the `dl`,
+`cellpose` and `dev` extras, `pip install -e ".[gui,dl,cellpose,dev]"`). One test
+(`test_parity_with_matlab_on_dense_plate`) uses a legacy MATLAB plate and is skipped when that data is not
+present. It looks under the folder in the environment variable `SCANLAG_LEGACY_DATA` (default: the developers'
+`D:\Alon\Documents\Experiments\microcolony-seq`). All tests should pass (about 2 min).
 
 ---
 
@@ -1090,6 +1287,9 @@ when that data is not present. At the time of writing: **37 passed** (about 1 mi
 ```
 scanlag_analyser/
   pyproject.toml              package metadata and dependencies
+  environment.yml             conda environment for users with an NVIDIA GPU
+  environment-cpu.yml         the same with CPU-only PyTorch (no NVIDIA GPU, macOS)
+  environment-training.yml    add-on for training, Cellpose and the tests
   README.md                   this file
   docs/PLAN.md                developer design notes and benchmark results (sections 1-15)
   models/                     trained detectors (unet_scanlag_v1 in git; others git-ignored)
@@ -1108,6 +1308,7 @@ scanlag_analyser/
     plot_area_tracks.py         MATLAB vs model area-track figures
   scanlag/                    the Python package
     cli.py                      PyCharm argument splitting
+    device.py                   where the networks run: CUDA, Apple GPU or CPU (SCANLAG_DEVICE)
     store.py                    ResultsStore: the only writer, raw-data protection
     io/raw.py                   read-only scan access, timestamps
     io/matlab_import.py         MATLAB *_data.mat reader, ColonyStatus codes
@@ -1116,6 +1317,7 @@ scanlag_analyser/
     pipeline/run.py             segmentation + tracking per scanner, per-plate outputs
     pipeline/flags.py           review flags
     pipeline/export.py          CSV export
+    detect/channels.py          model input settings shared with training (PREVIOUS_GAP)
     detect/classical.py         MATLAB threshold detector (bit-exact port)
     detect/unet.py              U-Net detector, model loading
     detect/cellpose_backend.py  Cellpose-SAM detector
@@ -1130,7 +1332,6 @@ scanlag_analyser/
     eval/                       detection metrics (IoU and seed based)
   tests/                      pytest suite
   .idea/runConfigurations/    PyCharm run configurations
-  main.py                     PyCharm's sample file, not used
 ```
 
 Licence: no licence file is included in the repository; ask the authors before redistributing.

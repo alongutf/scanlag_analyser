@@ -39,6 +39,8 @@ from collections import OrderedDict
 from pathlib import Path
 
 import matplotlib
+from PyQt5 import QtCore, QtGui, QtWidgets  # before matplotlib's Qt backend, which otherwise may pick another
+                                            # installed binding (conda-forge's matplotlib brings PySide6)
 
 matplotlib.use("QtAgg")
 import numpy as np
@@ -48,7 +50,6 @@ from matplotlib import patheffects
 from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg, NavigationToolbar2QT
 from matplotlib.figure import Figure
 from PIL import Image
-from PyQt5 import QtCore, QtGui, QtWidgets
 from skimage.segmentation import find_boundaries
 
 from scanlag.detect.classical import subtract_background

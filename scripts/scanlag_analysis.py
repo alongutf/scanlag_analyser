@@ -1,6 +1,9 @@
 """Group reviewed ScanLag results into conditions, write per-condition tables and histograms.
 
-    python scripts/scanlag_analysis.py <results folder> [--layout conditions.csv]
+    python scripts/scanlag_analysis.py <results folder or experiment name> [--layout conditions.csv]
+
+The results folder is the one written by scanlag_pipeline.py. A bare experiment name (e.g. EPEC260224)
+is looked up in ~/results when no such folder exists in the working directory.
 
 The layout says which plates belong to which condition, one row per (condition, scanner):
 
@@ -53,11 +56,11 @@ from pathlib import Path
 
 import pandas as pd
 
-from scanlag.analysis.conditions import (FitConfig, area_matrix, available_plates, collect, layout_template,
-                                         parse_plates, read_layout, settings, summary)
+from scanlag.analysis.conditions import (FitConfig, area_matrix, available_plates, collect, expand_layout,
+                                         layout_template, read_layout, settings, summary)
 from scanlag.analysis.plots import histograms, write_html
 from scanlag.cli import split_prompt_args
-from scanlag.store import REGISTRY_FILE, ResultsStore
+from scanlag.store import REGISTRY_FILE, RESULTS_ROOT, ResultsStore
 
 
 def layout_from_args(specs: list[str]) -> pd.DataFrame:
@@ -75,16 +78,36 @@ def layout_from_args(specs: list[str]) -> pd.DataFrame:
 
 
 def folder_name(condition: str) -> str:
+    """The output folder of a condition: its name with characters not allowed in paths replaced by _."""
     return re.sub(r'[<>:"/\\|?*\s]+', "_", condition).strip("_") or "condition"
+
+
+def check_folder_names(conditions) -> None:
+    """Raise ValueError if two conditions would write to the same folder (e.g. "A B" and "A/B")."""
+    by_folder: dict[str, list[str]] = {}
+    for c in dict.fromkeys(conditions):
+        by_folder.setdefault(folder_name(c), []).append(c)
+    if clashes := [names for names in by_folder.values() if len(names) > 1]:
+        raise ValueError("conditions that would share an output folder, rename one of each: "
+                         + "; ".join(" / ".join(repr(n) for n in names) for names in clashes))
+
+
+def find_results(path: Path) -> Path:
+    """``path`` if it is a folder, else ~/results/<path> when ``path`` is a bare name."""
+    if not path.is_dir() and len(path.parts) == 1 and (RESULTS_ROOT / path).is_dir():
+        return RESULTS_ROOT / path
+    return path
 
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument("results", type=Path, help="results_<experiment> folder written by scanlag_pipeline.py")
+    parser.add_argument("results", type=Path,
+                        help="results folder written by scanlag_pipeline.py, or an experiment name in ~/results")
     parser.add_argument("--layout", type=Path, help="condition layout CSV (default <results>/conditions.csv)")
     parser.add_argument("--condition", action="append", default=[], help="NAME=scanner:plates[;scanner:plates]")
     parser.add_argument("--out", type=Path, help="output folder (default <results>/analysis)")
-    parser.add_argument("--growth", choices=["radial", "doubling", "both"], default="radial")
+    parser.add_argument("--growth", choices=["radial", "doubling", "both"], default="radial",
+                        help="growth histogram(s) to draw, see above (default radial)")
     parser.add_argument("--fit-frames", default="1-12",
                         help="frames of each colony used for the sqrt(area) fit, from appearance (default 1-12)")
     parser.add_argument("--doubling-range", type=float, nargs=2, default=[FitConfig.lb, FitConfig.ub],
@@ -97,7 +120,7 @@ def main() -> None:
     parser.add_argument("--no-open", action="store_true", help="don't open the histograms in the browser")
     args = parser.parse_args(split_prompt_args(sys.argv[1:]))
 
-    results = args.results.resolve()
+    results = find_results(args.results).resolve()
     if not results.is_dir():
         sys.exit(f"{results} is not a folder")
     registry = results / REGISTRY_FILE
@@ -105,9 +128,10 @@ def main() -> None:
     print("plates found: " + "; ".join(f"{s}: {','.join(map(str, p))}" for s, p in available_plates(results).items()))
 
     if args.condition:
-        table = layout_from_args(args.condition)
-        layout = pd.DataFrame([{"condition": r.condition, "scanner": r.scanner, "plate": p}
-                               for r in table.itertuples() for p in parse_plates(r.plates)])
+        try:
+            layout = expand_layout(layout_from_args(args.condition))
+        except ValueError as e:
+            sys.exit(str(e))
     else:
         path = args.layout or results / "conditions.csv"
         if not path.exists():
@@ -115,8 +139,15 @@ def main() -> None:
             sys.exit(f"no condition layout yet: wrote a template to {path}\n"
                      "fill in the condition column (split a scanner's plates over several rows if needed) "
                      "and run again")
-        layout = read_layout(path)
+        try:
+            layout = read_layout(path)
+        except ValueError as e:
+            sys.exit(str(e))
         print(f"layout: {path}")
+    try:
+        check_folder_names(layout.condition)
+    except ValueError as e:
+        sys.exit(str(e))
 
     first, _, last = args.fit_frames.partition("-")
     lb, ub = args.doubling_range

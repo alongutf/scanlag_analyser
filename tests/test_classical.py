@@ -1,3 +1,4 @@
+import os
 from pathlib import Path
 
 import numpy as np
@@ -7,7 +8,9 @@ from scipy import ndimage as ndi
 from scanlag.detect.classical import binarize, label_column_major, rgb2gray_uint8, stretch_limits
 from scanlag.track.seed_tracker import SeedTracker, border_status
 
-DENSE_PLATE = Path(r"D:\Alon\Documents\Experiments\microcolony-seq\EPEC260216\AMP24\ROI\sep_2_2")
+# the legacy MATLAB experiments (skipped if missing); set SCANLAG_LEGACY_DATA on another machine
+LEGACY_DATA = Path(os.environ.get("SCANLAG_LEGACY_DATA", r"D:\Alon\Documents\Experiments\microcolony-seq"))
+DENSE_PLATE = LEGACY_DATA / "EPEC260216" / "AMP24" / "ROI" / "sep_2_2"
 
 
 def test_rgb2gray_matches_matlab_values():

@@ -84,8 +84,9 @@ class Annotator:
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--testset", type=Path, default=PROJECT_ROOT / "testset_matlab")
+    parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    parser.add_argument("--testset", type=Path, default=PROJECT_ROOT / "testset_matlab",
+                        help="test set folder (default: testset_matlab in the project)")
     args = parser.parse_args()
     Annotator(args.testset)
     napari.run()

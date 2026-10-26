@@ -4,7 +4,7 @@ from scanlag.store import RawDataProtectionError, ResultsStore, default_results_
 
 
 def test_default_results_dir_named_after_data_folder(tmp_path):
-    assert default_results_dir(tmp_path / "raw" / "EPEC260323", root=tmp_path) == tmp_path / "results_EPEC260323"
+    assert default_results_dir(tmp_path / "raw" / "EPEC260323", root=tmp_path) == tmp_path / "EPEC260323"
 
 
 def test_results_inside_raw_rejected(tmp_path):

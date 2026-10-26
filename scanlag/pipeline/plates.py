@@ -2,8 +2,9 @@
 
 Plates (PLAN §1.1 steps 1-2): circles are found on the background scan by a Hough transform,
 with the expected radius from the plate diameter and the scan resolution (CreateBoardHint.m
-assumes 90 mm plates). They are numbered like CreateBoardHint.m: by column (x, rounded to 10 % of
-the scan width), then by row. On a 2 x 3 board, plates 1-3 are the left column, top to bottom.
+assumes 90 mm plates). They are numbered like CreateBoardHint.m: by column, then by row. Plates
+whose centres are less than a plate radius apart in x form a column (MATLAB rounds x to 10 % of
+the scan width instead). On a 2 x 3 board, plates 1-3 are the left column, top to bottom.
 
 Registration: each frame's shift relative to the background is measured per plate by phase
 correlation of the plate's edge image (rim, labels, writing; colonies grow but don't move) and
@@ -58,7 +59,8 @@ def find_plates(background: np.ndarray, n_plates: int = 6, dpi: float = 300.0,
                              param1=60, param2=20, minRadius=int(rs * 0.9), maxRadius=int(rs * 1.1))
     if found is None or found.shape[1] < n_plates:
         n = 0 if found is None else found.shape[1]
-        raise RuntimeError(f"found {n} plate-sized circles, expected {n_plates}")
+        raise RuntimeError(f"found {n} plate-sized circles, expected {n_plates}. If the board holds fewer plates, "
+                           f"use --plates; plates are expected to be {diameter_mm:g} mm across in a {dpi:g} dpi scan")
     plates = [refine_circle(gray, x * scale, y * scale, r * scale) for x, y, r in found[0, :n_plates]]
 
     # Columns: plates whose centres are less than a radius apart in x. (Rounding x to 10 % of the
