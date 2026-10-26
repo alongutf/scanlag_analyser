@@ -3,7 +3,7 @@
     python scripts/scanlag_analysis.py <results folder or experiment name> [--layout conditions.csv]
 
 The results folder is the one written by scanlag_pipeline.py. A bare experiment name (e.g. EPEC260224)
-is looked up in ~/results when no such folder exists in the working directory.
+is looked up in <project root>/results when no such folder exists in the working directory.
 
 The layout says which plates belong to which condition, one row per (condition, scanner):
 
@@ -93,7 +93,7 @@ def check_folder_names(conditions) -> None:
 
 
 def find_results(path: Path) -> Path:
-    """``path`` if it is a folder, else ~/results/<path> when ``path`` is a bare name."""
+    """``path`` if it is a folder, else <project root>/results/<path> when ``path`` is a bare name."""
     if not path.is_dir() and len(path.parts) == 1 and (RESULTS_ROOT / path).is_dir():
         return RESULTS_ROOT / path
     return path
@@ -102,7 +102,7 @@ def find_results(path: Path) -> Path:
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("results", type=Path,
-                        help="results folder written by scanlag_pipeline.py, or an experiment name in ~/results")
+                        help="results folder written by scanlag_pipeline.py, or an experiment name in <project root>/results")
     parser.add_argument("--layout", type=Path, help="condition layout CSV (default <results>/conditions.csv)")
     parser.add_argument("--condition", action="append", default=[], help="NAME=scanner:plates[;scanner:plates]")
     parser.add_argument("--out", type=Path, help="output folder (default <results>/analysis)")

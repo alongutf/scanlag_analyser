@@ -18,7 +18,7 @@ import zarr
 from PIL import Image
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
-RESULTS_ROOT = Path.home() / "results"
+RESULTS_ROOT = PROJECT_ROOT / "results"
 REGISTRY_FILE = ".scanlag_results.json"
 LABEL_CHUNK = 512
 
@@ -28,7 +28,7 @@ class RawDataProtectionError(PermissionError):
 
 
 def default_results_dir(raw_dir: str | Path, root: str | Path = RESULTS_ROOT) -> Path:
-    """``<root>/<raw data folder name>``, with ``root`` defaulting to ``~/results``."""
+    """``<root>/<raw data folder name>``, with ``root`` defaulting to ``<project root>/results``."""
     return Path(root) / Path(raw_dir).name
 
 

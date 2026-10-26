@@ -14,7 +14,7 @@
 5. "Finish & export" in the GUI (or --no-review / --export-only) writes the tables of every plate in
    the results folder (only the selected scanners' plates with --prefix / --scanner):
    <scanner>/plate_<k>/ colonies.csv, tracks.csv, area_matrix.csv, and
-   all_colonies.csv, all_tracks.csv, summary.csv at the top. Results go to ~/results/<folder name>.
+   all_colonies.csv, all_tracks.csv, summary.csv at the top. Results go to <project root>/results/<folder name>.
 
 The raw folder is only read. Re-running skips the segmentation of scanners that are already
 done (use --redo to repeat it), so --review-only or a plain re-run reopens the GUI with the
@@ -60,7 +60,7 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     parser.add_argument("--detector", default="unet",
                         help="unet (U-Net v1, ~0.15 s per plate frame on GPU), cellpose (Cellpose-SAM v1, ~5.5 s per "
                              "plate frame), classical (MATLAB threshold, no GPU) or a trained model folder")
-    parser.add_argument("--out", type=Path, help="results folder (default: ~/results/<scan folder name>)")
+    parser.add_argument("--out", type=Path, help="results folder (default: <project root>/results/<scan folder name>)")
     parser.add_argument("--prefix", action="append", default=[],
                         help="only the scanners whose file name prefix starts with this (repeatable)")
     parser.add_argument("--scanner", action="append", default=[],

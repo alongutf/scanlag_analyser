@@ -43,7 +43,7 @@ The raw scans are **only ever read**. Every output goes to a separate results fo
 ## 1. Workflow at a glance
 
 ```
- raw scan folder (read only)            ~/results/<folder name>/  (by default)
+ raw scan folder (read only)            <repo>/results/<folder name>/  (by default)
  ───────────────────────────            ──────────────────────────────────────────────────────────────
  <prefix>_<scanner>_<YYYYMMDD>_<HHMM>.tiff
              │
@@ -78,11 +78,10 @@ python scripts\scanlag_analysis.py EPEC260224
 python scripts\scanlag_analysis.py EPEC260224 --growth both
 ```
 
-Step 1 writes its results to `~/results/EPEC260224` (`%USERPROFILE%\results\EPEC260224` on Windows).
+Step 1 writes its results to `results/EPEC260224` in the project folder (this repository).
 `scanlag_analysis.py` accepts the bare experiment name and looks it up there, unless a folder of that name
 exists in the current directory. If you gave the pipeline `--out`, pass that folder instead. The examples are
-for the Windows Command Prompt (`cmd`); in PowerShell write `"$env:USERPROFILE\results\EPEC260224"` where a
-full path is needed.
+for the Windows Command Prompt (`cmd`), run from the project folder.
 
 ---
 
@@ -308,7 +307,7 @@ python scripts/scanlag_pipeline.py <scan folder> [--detector unet|cellpose|class
 |---|---|---|---|
 | `scans` (positional) | folder | *required* | Folder with the raw scans (searched recursively). |
 | `--detector` | text | `unet` | `unet` = U-Net v1 (`models/unet_scanlag_v1`, about 0.15 s per plate per frame on GPU); `cellpose` = fine-tuned Cellpose-SAM v1 (`models/cpsam_scanlag_v1`, about 5.5 s per plate per frame); `classical` = MATLAB's threshold detector (no GPU or torch needed); or the path of any trained model folder (one with a `config.json`). Anything else stops with `unknown detector ...`. |
-| `--out` | folder | `~/results/<scan folder name>` (`%USERPROFILE%\results\<scan folder name>` on Windows) | Results folder. Must not be inside the raw-data folder (and vice versa). |
+| `--out` | folder | `<project folder>/results/<scan folder name>` | Results folder. Must not be inside the raw-data folder (and vice versa). |
 | `--prefix` | text, repeatable | all | Only the scanners whose file name prefix starts with this (case-insensitive), e.g. `--prefix epec-amp`. |
 | `--scanner` | text, repeatable | all | Only this scanner, e.g. `--scanner 1-4.1u` (case-insensitive). It matches either the results sub-folder name (`CTRL1_1-4.1u`) or the scanner name from the file names (`1-4.1u`, which selects all folders with that scanner). With `--prefix`, a scanner must match both. |
 | `--max-colonies` | integer | `500` | Before segmenting, the last frame of every plate is segmented once and its blobs of at least 10 px are counted (`<scanner>: last-frame blobs plate 1: 74, ...`). Colonies that have merged by then count once, so the true number of colonies is at least that. If plates have more blobs than this, the script asks `warning: <scanner>, plates ... are too dense (n>500). expect long runtimes and low quality tracks. exclude these plates? y/n`. Answering `n`, or no terminal, keeps them. Excluded plates get no results folder and are recorded in `scanner.json` as `excluded_plates`. `0` turns the check off. The check only covers scanners segmented in this run (not those already done, and not with `--review-only`, `--export-only`, `--reflag` or `--retrack`). |
@@ -377,7 +376,7 @@ counts as done. To process them after all, run that scanner again with
 ### Examples
 
 ```bat
-:: default: U-Net detector, results in %USERPROFILE%\results\EPEC260224, then the review window
+:: default: U-Net detector, results in results\EPEC260224 (project folder), then the review window
 python scripts\scanlag_pipeline.py "D:\Experiments\EPEC260224"
 
 :: MATLAB-style threshold detector, results somewhere else, 4 plates per scanner
@@ -516,7 +515,7 @@ python scripts/scanlag_analysis.py <results folder | experiment name> [--layout 
 
 | Argument | Type | Default | Meaning |
 |---|---|---|---|
-| `results` (positional) | folder or name | *required* | The results folder written by the pipeline, or just the experiment name (e.g. `EPEC260224`): a bare name that is not a folder in the current directory is looked up in `~/results` (`%USERPROFILE%\results`). |
+| `results` (positional) | folder or name | *required* | The results folder written by the pipeline, or just the experiment name (e.g. `EPEC260224`): a bare name that is not a folder in the current directory is looked up in `results` in the project folder. |
 | `--layout` | file | `<results>/conditions.csv` | Condition layout CSV (see below). |
 | `--condition` | text, repeatable | none | Layout on the command line instead of a file: `NAME=scanner:plates[;scanner:plates]`, one per condition. When given, `--layout` is not read. The same checks as for `conditions.csv` apply (a plate in two conditions is an error). |
 | `--out` | folder | `<results>/analysis` | Output folder. |
@@ -614,7 +613,7 @@ The script also prints the summary table (median appearance, median growth, n pe
 ### Examples
 
 ```bat
-:: first run: writes %USERPROFILE%\results\EPEC260224\conditions.csv and stops; fill it in, then:
+:: first run: writes results\EPEC260224\conditions.csv and stops; fill it in, then:
 python scripts\scanlag_analysis.py EPEC260224
 
 :: both growth histograms, fit over frames 2-10 after appearance, 30 min time bins
@@ -624,17 +623,17 @@ python scripts\scanlag_analysis.py EPEC260224 --growth both --fit-frames 2-10 --
 python scripts\scanlag_analysis.py "E:\results\EPEC260224_classical"
 
 :: conditions on the command line, written to a separate folder, no browser
-python scripts\scanlag_analysis.py EPEC260224 --condition "CTRL=1-4.1u:1-3;1-5.1u:1-3" --condition "AMP7=1-4.1u:4-6;1-5.1u:4-6" --out "%USERPROFILE%\results\EPEC260224\analysis_v2" --no-open
+python scripts\scanlag_analysis.py EPEC260224 --condition "CTRL=1-4.1u:1-3;1-5.1u:1-3" --condition "AMP7=1-4.1u:4-6;1-5.1u:4-6" --out "results\EPEC260224\analysis_v2" --no-open
 ```
 
 ---
 
 ## 7. Output files reference
 
-Default results folder: `~/results/<scan folder name>/` (`%USERPROFILE%\results\<scan folder name>` on Windows).
+Default results folder: `<project folder>/results/<scan folder name>/`.
 
 ```
-EPEC260224/                      e.g. %USERPROFILE%\results\EPEC260224
+EPEC260224/                      e.g. <project folder>\results\EPEC260224
   .scanlag_results.json          which raw folder(s) this results folder belongs to
   conditions.csv                 your condition layout (section 6)
   all_colonies.csv               export: every plate's colonies.csv, stacked
@@ -839,10 +838,10 @@ run, with both sets of metrics), `status_crosstab.csv`, `area_tracks.png`, `pair
 is printed.
 
 ```bat
-python scripts\compare_with_matlab.py "%USERPROFILE%\results\EPEC260224" "D:\Experiments\EPEC260224\CTRL1\ROI" --scanner 1-4.1u
+python scripts\compare_with_matlab.py "results\EPEC260224" "D:\Experiments\EPEC260224\CTRL1\ROI" --scanner 1-4.1u
 
 :: MATLAB folders named sep_2_<plate>, stricter matching
-python scripts\compare_with_matlab.py "%USERPROFILE%\results\EPEC260224" "D:\Experiments\EPEC260224\CTRL2\ROI" --scanner 1-4.4.1u --matlab-scanner 2 --max-dist 5
+python scripts\compare_with_matlab.py "results\EPEC260224" "D:\Experiments\EPEC260224\CTRL2\ROI" --scanner 1-4.4.1u --matlab-scanner 2 --max-dist 5
 ```
 
 ---
@@ -854,7 +853,7 @@ The project contains two shared run configurations (`.idea/runConfigurations/`):
 | Configuration | Script | Prompt |
 |---|---|---|
 | **ScanLag pipeline** | `scripts/scanlag_pipeline.py` | "Scan folder, then any options (e.g. --detector classical, --review-only)" |
-| **ScanLag analysis** | `scripts/scanlag_analysis.py` | "Experiment name in ~/results or results folder (e.g. EPEC260224), then any options (e.g. --growth both)" |
+| **ScanLag analysis** | `scripts/scanlag_analysis.py` | "Experiment name in results/ or results folder (e.g. EPEC260224), then any options (e.g. --growth both)" |
 
 1. Open the project folder in PyCharm and select the `scanlag` conda environment (or `.venv`) as interpreter
    (Settings → Project → Python Interpreter → Add Interpreter → Conda Environment → Use existing). The configurations use the project interpreter and the project folder as working directory.
@@ -866,9 +865,9 @@ The project contains two shared run configurations (`.idea/runConfigurations/`):
    EPEC260224 --growth both --fit-frames 2-10
    ```
 
-   For the analysis, the experiment name is enough when the results are in `~/results`; otherwise type the
-   full path of the results folder (PyCharm passes the text to Python without a shell, so do not rely on
-   `%USERPROFILE%` or `~` there).
+   For the analysis, the experiment name is enough when the results are in the project's `results`
+   folder; otherwise type the full path of the results folder (PyCharm passes the text to Python without a
+   shell, so do not rely on `%USERPROFILE%` or `~` there).
 
 PyCharm passes everything typed in that box as one argument. `scanlag.cli.split_prompt_args` splits it
 again **before each ` --`**, so folder names with spaces work with or without quotes, and a quoted path
@@ -880,7 +879,7 @@ ending in a backslash (`"D:\scans\exp\" --redo`) is handled. Consequences:
 
 For the other scripts, create a run configuration (Run → Edit Configurations → + → Python), set the script
 path, the parameters and the working directory to the project folder. Relative paths are relative to the
-working directory, so give results folders under `~/results` as full paths.
+working directory, so `results\EPEC260224` works for the default results folder.
 
 The pipeline may ask y/n questions (`--redo` deleting results, dense plates); type the answer in PyCharm's
 Run console and press Enter.
@@ -898,8 +897,9 @@ from pathlib import Path
 import pandas as pd
 from scanlag.pipeline.run import load_plate_dirs, plate_info
 from scanlag.pipeline.export import plate_tables
+from scanlag.store import RESULTS_ROOT
 
-results = Path.home() / "results" / "EPEC260224"   # the pipeline's default results folder
+results = RESULTS_ROOT / "EPEC260224"              # the pipeline's default results folder
 plates = load_plate_dirs(results)             # [.../1-4.1u/plate_1, ...]
 colonies, tracks, matrix = plate_tables(plates[0])
 included = colonies[colonies.included]
@@ -952,7 +952,7 @@ from scanlag.pipeline.run import RunConfig, process_scanner
 from scanlag.store import ResultsStore
 
 raw = Path(r"D:\Experiments\EPEC260224")
-store = ResultsStore.for_raw_dir(raw)                    # ~/results/EPEC260224
+store = ResultsStore.for_raw_dir(raw)                    # <project folder>/results/EPEC260224
 for scanner in find_scanners(raw):
     process_scanner(scanner, store, RunConfig(detector="classical"))
 ```
@@ -967,7 +967,7 @@ for scanner in find_scanners(raw):
 | `scanlag.pipeline.run.last_frame_counts` | `(scanner, cfg, seg=None, log=print) -> dict[int, int]` | Plate number → colonies (blobs ≥ `min_area` px) on the last frame: the `--max-colonies` density check. |
 | `scanlag.pipeline.run.process_scanner` | `(scanner, store, cfg, log=print, seg=None, exclude=()) -> list[Path]` | Segments and tracks all plates of one scanner, except the plate numbers in `exclude`; returns the plate folders. `seg` reuses a segmenter from `make_segmenter`. Does **not** write `scanner.json` (the script does). |
 | `scanlag.store.ResultsStore` | `(results_dir, raw_dirs: list)`; `ResultsStore.for_raw_dir(raw_dir, results_dir=None)` | The only writer; refuses paths inside raw data. Methods `path(*parts)`, `write_json`, `write_table` (`.csv` or parquet), `write_mask`, `write_image`, `create_labels`. |
-| `scanlag.store.default_results_dir` | `(raw_dir, root=RESULTS_ROOT) -> Path` | `<root>/<raw folder name>`; `RESULTS_ROOT` is `~/results`. |
+| `scanlag.store.default_results_dir` | `(raw_dir, root=RESULTS_ROOT) -> Path` | `<root>/<raw folder name>`; `RESULTS_ROOT` is `<project folder>/results`. |
 | `scanlag.gui.review.run_review` | `(plate_dirs: list[Path], on_finish=None) -> None` | Opens the review window (blocks until closed). Importing this module switches matplotlib to the Qt backend. |
 
 ### Images, plates, detectors, tracking
@@ -1175,7 +1175,7 @@ line).
 
 **`... already holds results for [...]; choose another results directory for [...]`**
 Each results folder remembers its raw folder (`.scanlag_results.json`). Two experiments whose folders have
-the same name (e.g. two `AMP7`) would share `~/results/AMP7`; give one of them `--out`.
+the same name (e.g. two `AMP7`) would share `results/AMP7`; give one of them `--out`.
 
 **`warning: --redo will delete the results of ..., including review decisions on N plate(s). proceed? y/n`**
 `--redo` is about to delete complete results of those scanners. `y` deletes them and segments again; `n` (or
@@ -1201,7 +1201,7 @@ results folder elsewhere.
 
 **Is my raw data safe?**
 Yes, by design: scans are opened read-only, and all writes go through `ResultsStore`, which refuses any
-path inside a raw-data folder. Results go to `~/results/<folder>` by default. You can keep raw
+path inside a raw-data folder. Results go to `<project folder>/results/<folder>` by default. You can keep raw
 data on a read-only drive.
 
 **I re-ran with `--redo` and my review decisions are gone.**
@@ -1236,7 +1236,7 @@ belong to one condition only.
 Two condition names become the same folder name (e.g. `A B` and `A/B` both become `A_B`). Rename one.
 
 **`... is not a folder` from `scanlag_analysis.py`**
-Neither the path nor `~/results/<name>` exists. Pass the full path of the results folder (e.g. one written
+Neither the path nor `<project folder>/results/<name>` exists. Pass the full path of the results folder (e.g. one written
 with `--out`).
 
 **`warning: no results for 1-4.1u plate 3 (empty slot or not processed), skipped`**
