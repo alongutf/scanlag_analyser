@@ -25,7 +25,9 @@ def torch_device() -> torch.device:
     return torch.device("cpu")
 
 
-def autocast_dtype(device: torch.device) -> torch.dtype:
-    """Mixed-precision type: bfloat16 (as the models were trained), float16 on the Apple GPU, where
-    bfloat16 needs macOS 14 and is not faster."""
-    return torch.float16 if device.type == "mps" else torch.bfloat16
+def autocast(device: torch.device) -> torch.autocast:
+    """Mixed precision for the networks' forward pass: bfloat16 on CUDA (as the models were trained),
+    float16 on the Apple GPU (bfloat16 needs macOS 14 there and is not faster), none on the CPU, where
+    bfloat16 is emulated on most processors and was measured ~1000x slower than float32."""
+    dtype = torch.float16 if device.type == "mps" else torch.bfloat16
+    return torch.autocast(device_type=device.type, dtype=dtype, enabled=device.type != "cpu")

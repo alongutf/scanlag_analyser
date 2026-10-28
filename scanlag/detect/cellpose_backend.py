@@ -54,8 +54,10 @@ class CellposeDetector:
 
             from scanlag.device import torch_device
 
-            # Cellpose picks CUDA or the Apple GPU itself when gpu=True
-            self._model = models.CellposeModel(gpu=torch_device().type != "cpu", pretrained_model=self.pretrained_model)
+            # Cellpose picks CUDA or the Apple GPU itself when gpu=True. Its default bfloat16 weights are
+            # emulated, and very slow, on most CPUs (see scanlag.device.autocast).
+            gpu = torch_device().type != "cpu"
+            self._model = models.CellposeModel(gpu=gpu, pretrained_model=self.pretrained_model, use_bfloat16=gpu)
         return self._model
 
     @classmethod

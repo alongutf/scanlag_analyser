@@ -26,7 +26,7 @@ import numpy as np
 import torch
 import torch.nn.functional as F
 
-from scanlag.device import autocast_dtype, torch_device
+from scanlag.device import autocast, torch_device
 from scanlag.train.dataset import CHANNELS
 
 BSIZE = 256  # fixed for Cellpose-SAM
@@ -133,7 +133,7 @@ def train(x, labels, ignore, source, out_dir: Path, cfg: TrainConfig, log=print)
         opt.zero_grad(set_to_none=True)
         for _ in range(cfg.accumulate):
             X, L, V = batch()
-            with torch.autocast(device_type=device.type, dtype=autocast_dtype(device)):
+            with autocast(device):
                 y = net(X)[0]
             loss = masked_loss(y.float(), L, V) / cfg.accumulate
             loss.backward()

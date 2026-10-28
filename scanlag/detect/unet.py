@@ -30,7 +30,7 @@ import torch.nn.functional as F
 from scipy import ndimage as ndi
 from skimage.segmentation import watershed
 
-from scanlag.device import autocast_dtype, torch_device
+from scanlag.device import autocast, torch_device
 
 PAD = 32  # the encoder downsamples by 32
 
@@ -134,7 +134,7 @@ class UNetDetector:
         H, W = round(h * s), round(w * s)
         t = F.interpolate(t, size=(H, W), mode="bilinear", align_corners=False)
         t = F.pad(t, (0, -W % PAD, 0, -H % PAD), mode="reflect")
-        with torch.autocast(device_type=t.device.type, dtype=autocast_dtype(t.device)):
+        with autocast(t.device):
             y = net(t)[..., :H, :W].float()
         if y.device.type == "mps" and (H % h or W % w):
             y = y.cpu()  # the Apple GPU's area resampling only takes whole-number factors

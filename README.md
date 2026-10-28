@@ -139,9 +139,10 @@ an NVIDIA driver, `environment.yml` stops with `nothing provides __cuda`: use `e
 else on the GPU of an Apple-silicon Mac (Metal, "MPS"), else on the CPU (`scanlag/device.py`). To choose
 yourself, set the environment variable `SCANLAG_DEVICE` to `cuda`, `mps` or `cpu` before running a script,
 e.g. `SCANLAG_DEVICE=cpu python scripts/scanlag_pipeline.py ...` on macOS/Linux, or
-`set SCANLAG_DEVICE=cpu` first on Windows. On the Apple GPU the networks compute in float16 instead of
-bfloat16, so areas can differ from a CUDA run by a pixel here and there; the U-Net post-processing and the
-tracking run on the CPU on every machine.
+`set SCANLAG_DEVICE=cpu` first on Windows. The networks compute in bfloat16 on CUDA (as they were trained),
+float16 on the Apple GPU and float32 on the CPU (most CPUs emulate bfloat16, ~1000× slower), so areas can
+differ from a CUDA run by a pixel here and there. The U-Net post-processing and the tracking run on the CPU
+on every machine.
 
 The environment installs the project itself in editable mode (`pip install -e .`, the last line of the
 file), so the scripts in `scripts/` can `import scanlag` and code changes take effect without

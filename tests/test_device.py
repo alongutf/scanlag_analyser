@@ -1,7 +1,7 @@
 import pytest
 import torch
 
-from scanlag.device import autocast_dtype, torch_device
+from scanlag.device import autocast, torch_device
 
 
 def test_device_order_and_override(monkeypatch):
@@ -18,6 +18,10 @@ def test_device_order_and_override(monkeypatch):
         torch_device()
 
 
-def test_autocast_dtype():
-    assert autocast_dtype(torch.device("mps")) == torch.float16
-    assert autocast_dtype(torch.device("cuda")) == autocast_dtype(torch.device("cpu")) == torch.bfloat16
+def test_no_mixed_precision_on_the_cpu():
+    """bfloat16 is emulated on most CPUs: a U-Net forward pass took ~1000x longer than in float32."""
+    with autocast(torch.device("cpu")):
+        y = torch.nn.Linear(4, 4)(torch.ones(1, 4))
+    assert y.dtype == torch.float32
+    assert autocast(torch.device("mps")).fast_dtype == torch.float16
+    assert autocast(torch.device("cuda")).fast_dtype == torch.bfloat16

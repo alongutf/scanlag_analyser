@@ -18,7 +18,7 @@ import torch
 import torch.nn.functional as F
 
 from scanlag.detect.unet import build_unet, distance_target
-from scanlag.device import autocast_dtype, torch_device
+from scanlag.device import autocast, torch_device
 from scanlag.train.cellpose_finetune import augment, norm_limits, normalize
 from scanlag.train.dataset import CHANNELS
 
@@ -73,7 +73,7 @@ def train(x, labels, ignore, source, out_dir: Path, cfg: UNetConfig, log=print) 
             ds.append(distance_target(li))
             vs.append(~ii)
         X, FG, D, V = (torch.from_numpy(np.stack(a)).float().to(device) for a in (xs, fgs, ds, vs))
-        with torch.autocast(device_type=device.type, dtype=autocast_dtype(device)):
+        with autocast(device):
             y = net(X)
         loss = unet_loss(y.float(), FG, D, V, cfg.dist_weight)
         opt.zero_grad(set_to_none=True)
